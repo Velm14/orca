@@ -22,7 +22,12 @@ import {
 import { execFileCapture } from './exec-file-capture'
 import type { GitExecOptions } from './git-exec-options'
 import { argsLookIdempotent } from './gh-idempotency'
-import { applyGhHostToArgs, explicitGhHostname, explicitGhRepoHostname } from './gh-host-args'
+import {
+  applyGhHostToArgs,
+  collectGhArgvHostSignals,
+  explicitGhHostname,
+  explicitGhRepoHostname
+} from './gh-host-args'
 import {
   defaultGhExecTimeoutMs,
   isTransientGhError,
@@ -43,6 +48,66 @@ export type GhExecOptions = Omit<GitExecOptions, 'cwd'> & {
   // runner qualify every spawn once, so call sites can't silently fall back
   // to github.com for GHES repos; it also scopes the rate-limit breaker.
   host?: string
+  /** Per-project account binding; the runner resolves and injects a child-only token. */
+  ghAccount?: { host: string; user: string }
+}
+
+type BoundGhError = Error & {
+  code: 'gh_bound_account_unavailable' | 'gh_bound_account_host_mismatch' | 'gh_multi_account_unsupported'
+}
+
+function isBoundGhError(err: unknown): err is BoundGhError {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    'code' in err &&
+    (err.code === 'gh_bound_account_unavailable' ||
+      err.code === 'gh_bound_account_host_mismatch' ||
+      err.code === 'gh_multi_account_unsupported')
+  )
+}
+
+async function resolveBoundGhExecEnv(
+  options: GhExecOptions,
+  resolved: ResolvedCommand,
+  args: readonly string[]
+): Promise<NodeJS.ProcessEnv | undefined> {
+  const binding = options.ghAccount
+  if (!binding || args[0] === 'auth') {
+    return options.env
+  }
+  // Why: dynamic import avoids a load-time cycle (runner ↔ github token module).
+  const {
+    buildBoundGhChildEnv,
+    createGhBoundAccountHostMismatchError,
+    createGhBoundAccountUnavailableError,
+    resolveGhAccountToken
+  } = await import('../../github/gh-account-token')
+  const { normalizeGhAccountBinding } = await import('../../../shared/github/account-binding')
+  const normalized = normalizeGhAccountBinding(binding)
+  if (!normalized) {
+    throw createGhBoundAccountUnavailableError(binding)
+  }
+  const optionsHost = options.host?.trim().toLowerCase()
+  if (!optionsHost || optionsHost !== normalized.host) {
+    throw createGhBoundAccountHostMismatchError(normalized, options.host)
+  }
+  for (const host of collectGhArgvHostSignals(args)) {
+    if (host !== normalized.host) {
+      throw createGhBoundAccountHostMismatchError(normalized, host)
+    }
+  }
+  const target = {
+    cwd: options.cwd,
+    wslDistro: resolved.wsl?.distro ?? options.wslDistro
+  }
+  const token = await resolveGhAccountToken(normalized, target)
+  return buildBoundGhChildEnv({
+    baseEnv: options.env ?? process.env,
+    binding: normalized,
+    token,
+    forWsl: resolved.wsl !== null
+  })
 }
 
 function nonInteractiveGhEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -103,6 +168,11 @@ export async function ghExecFileAsync(
 ): Promise<{ stdout: string; stderr: string }> {
   // Why: retry safety must reflect the original call even when fallbacks replace the resolved command.
   const idempotent = options.idempotent ?? argsLookIdempotent(args)
+  // Why: legacy github.com ownerRepos omit `host`; bound calls still need a
+  // pinned options.host before token-var selection and argv qualification.
+  if (options.ghAccount && !options.host?.trim() && args[0] !== 'auth') {
+    options = { ...options, host: options.ghAccount.host.trim().toLowerCase() }
+  }
   args = applyGhHostToArgs(args, options.host)
   let resolved = resolveCommand('gh', args, options.cwd, options.wslDistro)
   // Why: while a bucket is rate-limited every spawn returns 403 — fail fast; the probe is exempt so the breaker can learn the reset.
@@ -110,23 +180,63 @@ export async function ghExecFileAsync(
   const rateLimitBucket = classifyGhRateLimitBucket(args)
   const rateLimitProbe = isGhRateLimitProbe(args)
   assertGhRateLimitScopeAvailable(args, options, resolved, rateLimitBucket, rateLimitProbe)
+  let boundEnv: NodeJS.ProcessEnv | undefined = options.env
+  let boundEnvResolvedKey: string | null = null
+  const boundEnvKeyFor = (command: ResolvedCommand): string =>
+    command.wsl ? `wsl:${command.wsl.distro}` : 'native'
+  // Why: unbound calls must reach the spawn in the same tick — callers that abort
+  // synchronously would otherwise never get a child to kill. Token and capability
+  // are per execution host, so a native<->WSL fallback re-resolves.
+  const ensureBoundEnv = (): Promise<void> | null => {
+    const key = boundEnvKeyFor(resolved)
+    if (boundEnvResolvedKey === key) {
+      return null
+    }
+    if (!options.ghAccount || args[0] === 'auth') {
+      boundEnv = options.env
+      boundEnvResolvedKey = key
+      return null
+    }
+    return resolveBoundGhExecEnv(options, resolved, args).then((env) => {
+      boundEnv = env
+      boundEnvResolvedKey = key
+    })
+  }
   let lastError: unknown
   let attemptedHostFallback = false
   let attemptedDefaultWslFallback = false
   for (let attempt = 0; attempt <= GH_RETRY_DELAYS_MS.length; attempt++) {
     try {
+      const boundEnvReady = ensureBoundEnv()
+      if (boundEnvReady) {
+        await boundEnvReady
+      }
       const { stdout, stderr } = await execFileCapture(resolved.binary, resolved.args, {
         cwd: resolved.cwd,
         encoding: (options.encoding ?? 'utf-8') as BufferEncoding,
         maxBuffer: options.maxBuffer,
         // Why: bound gh so one stuck child fails visibly instead of wedging the IPC lane.
-        timeout: options.timeout ?? defaultGhExecTimeoutMs(options.env),
-        env: nonInteractiveGhEnv(options.env),
+        timeout: options.timeout ?? defaultGhExecTimeoutMs(boundEnv ?? options.env),
+        env: nonInteractiveGhEnv(boundEnv ?? options.env),
         signal: options.signal
       })
       return { stdout: stdout as string, stderr: stderr as string }
     } catch (err) {
       lastError = err
+      if (isBoundGhError(err)) {
+        // Why: a WSL distro without gh cannot answer the token probe either; give the host gh one try.
+        const boundStderr =
+          'stderr' in err ? String((err as { stderr?: unknown }).stderr ?? '') : err.message
+        if (!attemptedHostFallback && canFallBackToHostGitHubCli('gh', args, resolved, boundStderr)) {
+          resolved = resolveHostGitHubCli('gh', args)
+          attemptedHostFallback = true
+          boundEnvResolvedKey = null
+          assertGhRateLimitScopeAvailable(args, options, resolved, rateLimitBucket, rateLimitProbe)
+          attempt = -1
+          continue
+        }
+        throw err
+      }
       const { stderr } = extractExecError(err)
       if (isGhPrimaryRateLimitStderr(stderr)) {
         notifyGhPrimaryRateLimit(rateLimitBucket, ghRateLimitScope(args, options, resolved))
@@ -144,6 +254,7 @@ export async function ghExecFileAsync(
           // Why: WSL-only Windows installs have no host gh.exe, and global calls (rate_limit/auth) carry no cwd to route by.
           resolved = wslResolved
           attemptedDefaultWslFallback = true
+          boundEnvResolvedKey = null
           assertGhRateLimitScopeAvailable(args, options, resolved, rateLimitBucket, rateLimitProbe)
           attempt = -1
           continue
@@ -152,6 +263,7 @@ export async function ghExecFileAsync(
       if (!attemptedHostFallback && canFallBackToHostGitHubCli('gh', args, resolved, stderr)) {
         resolved = resolveHostGitHubCli('gh', args)
         attemptedHostFallback = true
+        boundEnvResolvedKey = null
         assertGhRateLimitScopeAvailable(args, options, resolved, rateLimitBucket, rateLimitProbe)
         attempt = -1
         continue

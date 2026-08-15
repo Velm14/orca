@@ -129,6 +129,20 @@ export function createGitHubApi(): WebGitHubApi {
     starOrca: () => Promise.resolve(false),
     rateLimit: (args) =>
       route<WebGitHubResult<'rateLimit'>>(GITHUB_WEB_RPC_METHODS.rateLimit, args),
+    listBindableAccounts: (args) =>
+      route<WebGitHubResult<'listBindableAccounts'>>(GITHUB_WEB_RPC_METHODS.listBindableAccounts, {
+        repo: args.repoId ?? args.repoPath,
+        refreshCapability: args.refreshCapability
+      }),
+    validateAccountBinding: (args) =>
+      route<WebGitHubResult<'validateAccountBinding'>>(
+        GITHUB_WEB_RPC_METHODS.validateAccountBinding,
+        {
+          repo: args.repoId ?? args.repoPath,
+          host: args.host,
+          user: args.user
+        }
+      ),
     diagnoseAuth: () =>
       Promise.resolve({
         ok: false,

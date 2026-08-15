@@ -21,6 +21,10 @@ export type LocalProjectWorktreeGitOptions = {
   wslDistro?: string
 }
 
+export type LocalProjectGhExecOptions = LocalProjectWorktreeGitOptions & {
+  ghAccount?: Repo['ghAccount']
+}
+
 export function getLocalProjectGitExecOptions(
   store: Store,
   repo: Repo
@@ -79,6 +83,19 @@ export function getWorktreeCreatePrefetchGitOptions(
     return {}
   }
   return getLocalProjectWorktreeGitOptionsForRuntime(repo, projectRuntime)
+}
+
+/**
+ * Execution options for repo-scoped gh calls: the project's WSL routing plus its account binding.
+ *
+ * Why: every gh call site must resolve options through here — one that reaches for
+ * `getLocalProjectWorktreeGitOptions` instead silently runs as the ambient login.
+ */
+export function getLocalProjectGhExecOptions(store: Store, repo: Repo): LocalProjectGhExecOptions {
+  return {
+    ...getLocalProjectWorktreeGitOptions(store, repo),
+    ...(repo.ghAccount ? { ghAccount: repo.ghAccount } : {})
+  }
 }
 
 export function getLocalProjectWorktreeGitOptionsForRuntime(

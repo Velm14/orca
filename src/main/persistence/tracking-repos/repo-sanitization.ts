@@ -1,3 +1,5 @@
+import { normalizeGhAccountBinding } from '../../../shared/github/account-binding'
+import type { GhAccountBinding } from '../../../shared/github/account-binding'
 import type { RepoProjectHostSetupMethod } from '../../../shared/project-types'
 import type { Repo } from '../../../shared/repo-types'
 import type { GitRemoteIdentity } from '../../../shared/git-remote-identity'
@@ -79,7 +81,9 @@ export function sanitizeRepoUpdatesForPersistence<
       | 'customWorktreeVisibilitySources'
       | 'worktreeVisibilitySourcePreferences'
     >
-  >
+  > & {
+    ghAccount?: GhAccountBinding | null
+  }
 >(updates: T): T {
   const sanitized = { ...updates }
   if ('badgeColor' in sanitized) {
@@ -136,6 +140,15 @@ export function sanitizeRepoUpdatesForPersistence<
       delete sanitized.forkSyncMode
     } else {
       sanitized.forkSyncMode = forkSyncMode
+    }
+  }
+  // Why: null/undefined is the clear sentinel updateRepo consumes; only malformed shapes are dropped.
+  if ('ghAccount' in sanitized && sanitized.ghAccount != null) {
+    const ghAccount = normalizeGhAccountBinding(sanitized.ghAccount)
+    if (!ghAccount) {
+      delete sanitized.ghAccount
+    } else {
+      sanitized.ghAccount = ghAccount
     }
   }
   if ('customWorktreeVisibilitySources' in sanitized) {

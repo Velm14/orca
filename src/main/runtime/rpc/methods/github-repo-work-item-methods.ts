@@ -39,6 +39,15 @@ const RateLimit = z.object({
   force: z.boolean().optional()
 })
 
+const BindableAccounts = RepoSelector.extend({
+  refreshCapability: z.boolean().optional()
+})
+
+const ValidateAccountBinding = RepoSelector.extend({
+  host: requiredString('Missing host'),
+  user: requiredString('Missing user')
+})
+
 export const GITHUB_REPO_WORK_ITEM_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'github.repoSlug',
@@ -54,6 +63,23 @@ export const GITHUB_REPO_WORK_ITEM_METHODS: RpcMethod[] = [
     name: 'github.rateLimit',
     params: RateLimit,
     handler: async (params, { runtime }) => runtime.getGitHubRateLimit(params)
+  }),
+  defineMethod({
+    name: 'github.listBindableAccounts',
+    params: BindableAccounts,
+    handler: async (params, { runtime }) =>
+      runtime.listGitHubBindableAccounts(params.repo, {
+        refreshCapability: params.refreshCapability
+      })
+  }),
+  defineMethod({
+    name: 'github.validateAccountBinding',
+    params: ValidateAccountBinding,
+    handler: async (params, { runtime }) =>
+      runtime.validateGitHubAccountBinding(params.repo, {
+        host: params.host,
+        user: params.user
+      })
   }),
   defineMethod({
     name: 'github.listWorkItems',

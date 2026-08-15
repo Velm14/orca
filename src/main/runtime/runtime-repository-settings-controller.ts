@@ -1,6 +1,7 @@
 import { getRepoExecutionHostId } from '../../shared/execution-host'
 import { isFolderRepo } from '../../shared/repo-kind'
 import type { Repo } from '../../shared/repo-types'
+import type { GhAccountBinding } from '../../shared/github/account-binding'
 import { invalidateAuthorizedRootsCache } from '../ipc/filesystem-auth'
 import { prepareLocalWorktreeRootForRepo } from '../worktree-root-preparation'
 import type { RuntimeStore } from './runtime-store-contract'
@@ -38,6 +39,7 @@ type RepositoryUpdates = Partial<
 > & {
   sourceControlAi?: Repo['sourceControlAi'] | null
   externalWorktreeDiscoverySuppressedAt?: Repo['externalWorktreeDiscoverySuppressedAt'] | null
+  ghAccount?: GhAccountBinding | null
 }
 
 function omitUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
@@ -83,6 +85,10 @@ export class RuntimeRepositorySettingsController {
     }
     if ('sourceControlAi' in updates && updates.sourceControlAi === null) {
       sanitizedUpdates.sourceControlAi = null
+    }
+    // Why: only `null` clears; present-but-undefined is a malformed strip (do not unbind).
+    if ('ghAccount' in updates && updates.ghAccount === null) {
+      sanitizedUpdates.ghAccount = null
     }
     const updated = store.updateRepo(repo.id, sanitizedUpdates)
     if (!updated) {

@@ -6,6 +6,8 @@ import { isLegacyRepoForExternalWorktreeVisibility } from '../../../shared/exter
 import { normalizeRepoSourceControlAiOverrides } from '../../../shared/source-control-ai'
 import { normalizeWorktreeVisibilitySourcePreferences } from '../../../shared/worktree/visibility-sources'
 import { sanitizeRepoUpdatesForPersistence } from './repo-sanitization'
+import type { GhAccountBinding } from '../../../shared/github/account-binding'
+import { invalidateGhAccountTokenCache } from '../../github/gh-account-token'
 
 export type RepoUpdateMutationOperations = {
   state: PersistedState
@@ -70,6 +72,7 @@ export class RepoUpdatePersistenceOperations {
       agentWorktreeVisibility?: Repo['agentWorktreeVisibility'] | null
       sourceControlAi?: Repo['sourceControlAi'] | null
       externalWorktreeDiscoverySuppressedAt?: Repo['externalWorktreeDiscoverySuppressedAt'] | null
+      ghAccount?: GhAccountBinding | null
     },
     hostId?: ExecutionHostId
   ): Repo | null {
@@ -80,6 +83,7 @@ export class RepoUpdatePersistenceOperations {
     if (!repo) {
       return null
     }
+    const previousGhAccount = repo.ghAccount
     const sanitizedUpdates = sanitizeRepoUpdatesForPersistence(updates)
     if (
       'agentWorktreeVisibility' in sanitizedUpdates &&
@@ -134,6 +138,10 @@ export class RepoUpdatePersistenceOperations {
       delete repo.worktreeBasePath
       delete sanitizedUpdates.worktreeBasePath
     }
+    if ('ghAccount' in sanitizedUpdates && sanitizedUpdates.ghAccount == null) {
+      delete repo.ghAccount
+      delete sanitizedUpdates.ghAccount
+    }
     if (
       'externalWorktreeVisibility' in sanitizedUpdates &&
       (sanitizedUpdates.externalWorktreeVisibility === undefined ||
@@ -179,6 +187,13 @@ export class RepoUpdatePersistenceOperations {
         delete sanitizedUpdates.sourceControlAi
       } else {
         sanitizedUpdates.sourceControlAi = normalizedSourceControlAi
+      }
+    }
+    if ('ghAccount' in updates || 'ghAccount' in sanitizedUpdates) {
+      // Why: capture before clear — repo.ghAccount is deleted above on unbind.
+      invalidateGhAccountTokenCache(previousGhAccount)
+      if (sanitizedUpdates.ghAccount) {
+        invalidateGhAccountTokenCache(sanitizedUpdates.ghAccount)
       }
     }
     Object.assign(repo, sanitizedUpdates)

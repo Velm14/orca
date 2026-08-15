@@ -25,6 +25,7 @@ import type {
   FolderWorkspacePathStatusRequest
 } from '../../../../shared/folder-workspace-path-status'
 import type { ExecutionHostId } from '../../../../shared/execution-host'
+import type { GhAccountBinding } from '../../../../shared/github/account-binding'
 
 export const ERROR_TOAST_DURATION = 60_000
 
@@ -55,6 +56,7 @@ export type RepoUpdate = Partial<
   agentWorktreeVisibility?: Repo['agentWorktreeVisibility'] | null
   sourceControlAi?: Repo['sourceControlAi'] | null
   externalWorktreeDiscoverySuppressedAt?: Repo['externalWorktreeDiscoverySuppressedAt'] | null
+  ghAccount?: GhAccountBinding | null
 }
 
 export type ProjectUpdate = ProjectUpdateArgs['updates']
