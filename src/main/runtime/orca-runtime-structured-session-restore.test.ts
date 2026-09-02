@@ -205,7 +205,13 @@ describe('structured session cold restoration', () => {
   it('normalizes a restored tab id and removes it when closed', async () => {
     const runtime = new OrcaRuntimeService()
     const closeSessionTab = vi.fn(async () => undefined)
-    const closeStructuredSession = vi.fn(async () => undefined)
+    const structuredCloseSteps: string[] = []
+    const closeStructuredSession = vi.fn(async () => {
+      structuredCloseSteps.push('close')
+    })
+    const hideStructuredSession = vi.fn(async () => {
+      structuredCloseSteps.push('hide')
+    })
     runtime.setNotifier({ closeSessionTab } as never)
     const internal = runtime as unknown as {
       hasPersistedStructuredAgentSessionStore(): boolean
@@ -223,6 +229,7 @@ describe('structured session cold restoration', () => {
       reconcileRestartLeases: async () => undefined,
       restoreReadableSessions: async () => undefined,
       close: closeStructuredSession,
+      setSessionTabVisibility: hideStructuredSession,
       listSessionTabs: () => [
         {
           sessionId: 'agent-session:agent-session:restored-session',
@@ -298,6 +305,7 @@ describe('structured session cold restoration', () => {
       'agent-session:restored-session'
     ])
 
+    structuredCloseSteps.length = 0
     await runtime.closeMobileSessionTab('id:workspace-1', 'agent-session:restored-session', {
       reason: 'user'
     })
@@ -307,6 +315,7 @@ describe('structured session cold restoration', () => {
       'workspace-1'
     )
     expect(closeStructuredSession).toHaveBeenCalledWith('restored-session')
+    expect(structuredCloseSteps).toEqual(['close', 'hide'])
 
     const closed = await runtime.listMobileSessionTabs('id:workspace-1')
     expect(closed.tabs.map((tab) => tab.id)).toEqual([

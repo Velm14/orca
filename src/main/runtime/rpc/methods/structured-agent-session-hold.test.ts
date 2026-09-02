@@ -213,6 +213,48 @@ describe('a client that disappears without cleanup', () => {
     expect(closeSession).toHaveBeenCalledWith(SESSION)
   })
 
+  it('releases only the named structured subscription', async () => {
+    for (const id of ['desktop-subscription-1', 'desktop-subscription-2']) {
+      await dispatcher.dispatchStreaming(
+        {
+          id,
+          authToken: 'token',
+          method: 'agentSession.subscribe',
+          params: { sessionId: SESSION }
+        },
+        () => {},
+        CLIENT
+      )
+    }
+    expect(host.isHeld(SESSION)).toBe(true)
+
+    await dispatcher.dispatch(
+      {
+        id: 'unsubscribe-1',
+        authToken: 'token',
+        method: 'agentSession.unsubscribe',
+        params: { sessionId: SESSION, subscriptionId: 'desktop-subscription-1' }
+      },
+      CLIENT
+    )
+    await new Promise((resolve) => setTimeout(resolve, GRACE_MS * 20))
+
+    expect(host.hasSession(SESSION)).toBe(true)
+    expect(closeSession).not.toHaveBeenCalled()
+
+    await dispatcher.dispatch(
+      {
+        id: 'unsubscribe-2',
+        authToken: 'token',
+        method: 'agentSession.unsubscribe',
+        params: { sessionId: SESSION, subscriptionId: 'desktop-subscription-2' }
+      },
+      CLIENT
+    )
+    await vi.waitFor(() => expect(host.hasSession(SESSION)).toBe(false))
+    expect(closeSession).toHaveBeenCalledWith(SESSION)
+  })
+
   it('does not let a stream alone resume a released session', async () => {
     await host.close(SESSION)
     expect(host.hasSession(SESSION)).toBe(false)

@@ -51,6 +51,19 @@ function terminalOutput(streamId: number, chunk: string): Uint8Array {
 }
 
 describe('RpcClientStreamRegistry', () => {
+  it('sends scoped agent session unsubscribe when a direct stream is disposed', () => {
+    const { registry, sent } = createRegistry()
+    const dispose = registry.subscribe('agentSession.subscribe', { sessionId: 's-1' }, () => {})
+    const subscribe = sent[0]!
+
+    dispose()
+
+    expect(sent[1]).toMatchObject({
+      method: 'agentSession.unsubscribe',
+      params: { sessionId: 's-1', subscriptionId: subscribe.id }
+    })
+  })
+
   it('replays the latest terminal viewport without retaining stale stream routing', () => {
     const { registry, sent } = createRegistry()
     const events: unknown[] = []

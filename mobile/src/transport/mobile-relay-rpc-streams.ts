@@ -4,6 +4,7 @@ import {
   type TerminalSnapshotState
 } from './rpc-client-terminal-binary-frame'
 import {
+  buildStreamUnsubscribe,
   buildTerminalUnsubscribeParams,
   updateTerminalSubscriptionViewport
 } from './rpc-client-terminal-subscription'
@@ -143,6 +144,15 @@ export class MobileRelayRpcStreams {
           id: this.options.nextId(),
           method: 'terminal.unsubscribe',
           params
+        })
+      }
+    } else if (stream.method === 'agentSession.subscribe') {
+      const unsubscribe = buildStreamUnsubscribe(stream.method, stream.params, id)
+      if (unsubscribe) {
+        this.options.sendFrame({
+          id: this.options.nextId(),
+          method: unsubscribe.method,
+          params: unsubscribe.params
         })
       }
     } else if (stream.subscriptionId) {

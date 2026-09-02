@@ -133,6 +133,29 @@ describe('MobileRelayRpcStreams failure parity', () => {
     expect(sendFrame).not.toHaveBeenCalled()
   })
 
+  it('sends agent session unsubscribe with the stream identity when disposed', async () => {
+    const sendFrame = vi.fn(() => true)
+    const nextId = vi
+      .fn<() => string>()
+      .mockReturnValueOnce('stream-1')
+      .mockReturnValueOnce('request-2')
+    const streams = new MobileRelayRpcStreams({
+      nextId,
+      sendFrame,
+      waitForConnected: async () => {}
+    })
+    const cancel = streams.subscribe('agentSession.subscribe', { sessionId: 's-1' }, vi.fn())
+    await Promise.resolve()
+
+    cancel()
+
+    expect(sendFrame).toHaveBeenNthCalledWith(2, {
+      id: 'request-2',
+      method: 'agentSession.unsubscribe',
+      params: { sessionId: 's-1', subscriptionId: 'stream-1' }
+    })
+  })
+
   it('removes a failed stream even when its listener throws', async () => {
     const listener = vi.fn(() => {
       throw new Error('listener failed')
