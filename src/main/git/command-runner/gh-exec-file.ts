@@ -53,7 +53,10 @@ export type GhExecOptions = Omit<GitExecOptions, 'cwd'> & {
 }
 
 type BoundGhError = Error & {
-  code: 'gh_bound_account_unavailable' | 'gh_bound_account_host_mismatch' | 'gh_multi_account_unsupported'
+  code:
+    | 'gh_bound_account_unavailable'
+    | 'gh_bound_account_host_mismatch'
+    | 'gh_multi_account_unsupported'
 }
 
 function isBoundGhError(err: unknown): err is BoundGhError {
@@ -227,7 +230,10 @@ export async function ghExecFileAsync(
         // Why: a WSL distro without gh cannot answer the token probe either; give the host gh one try.
         const boundStderr =
           'stderr' in err ? String((err as { stderr?: unknown }).stderr ?? '') : err.message
-        if (!attemptedHostFallback && canFallBackToHostGitHubCli('gh', args, resolved, boundStderr)) {
+        if (
+          !attemptedHostFallback &&
+          canFallBackToHostGitHubCli('gh', args, resolved, boundStderr)
+        ) {
           resolved = resolveHostGitHubCli('gh', args)
           attemptedHostFallback = true
           boundEnvResolvedKey = null

@@ -4,7 +4,7 @@
  * Why: binding creation must not offer accounts when the execution host's gh
  * is too old; probe once per local/WSL runtime and recheck after fallbacks.
  */
-import { commandExecFileAsync } from '../git/runner'
+import { ghExecFileAsync } from '../git/runner'
 import { parseWslUncPath } from '../../shared/wsl-paths'
 import type { GhMultiAccountCapability } from '../../shared/github/auth-types'
 
@@ -64,7 +64,7 @@ async function probeMultiAccountCapability(
 ): Promise<GhMultiAccountCapability> {
   const normalized = normalizeGhCapabilityTarget(target)
   try {
-    const { stdout, stderr } = await commandExecFileAsync('gh', ['auth', 'token', '--help'], {
+    const { stdout, stderr } = await ghExecFileAsync(['auth', 'token', '--help'], {
       cwd: normalized.cwd,
       wslDistro: normalized.wslDistro,
       timeout: CAPABILITY_PROBE_TIMEOUT_MS,

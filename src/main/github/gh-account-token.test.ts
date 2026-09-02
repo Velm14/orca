@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { commandExecFileAsyncMock, getGhMultiAccountCapabilityMock } = vi.hoisted(() => ({
-  commandExecFileAsyncMock: vi.fn(),
+const { ghExecFileAsyncMock, getGhMultiAccountCapabilityMock } = vi.hoisted(() => ({
+  ghExecFileAsyncMock: vi.fn(),
   getGhMultiAccountCapabilityMock: vi.fn()
 }))
 
 vi.mock('../git/runner', () => ({
-  commandExecFileAsync: commandExecFileAsyncMock
+  ghExecFileAsync: ghExecFileAsyncMock
 }))
 
 import type * as GhCapabilityStateModule from './gh-capability-state'
@@ -31,7 +31,7 @@ import {
 describe('gh-account-token', () => {
   beforeEach(() => {
     clearGhAccountTokenCacheForTests()
-    commandExecFileAsyncMock.mockReset()
+    ghExecFileAsyncMock.mockReset()
     getGhMultiAccountCapabilityMock.mockReset()
     getGhMultiAccountCapabilityMock.mockResolvedValue('supported')
   })
@@ -83,37 +83,36 @@ describe('gh-account-token', () => {
   })
 
   it('resolves via gh auth token --user/--hostname and caches', async () => {
-    commandExecFileAsyncMock.mockResolvedValue({ stdout: 'tok\r\n', stderr: '' })
+    ghExecFileAsyncMock.mockResolvedValue({ stdout: 'tok\r\n', stderr: '' })
     await expect(resolveGhAccountToken({ host: 'github.com', user: 'Alice' })).resolves.toBe('tok')
     await expect(resolveGhAccountToken({ host: 'github.com', user: 'Alice' })).resolves.toBe('tok')
-    expect(commandExecFileAsyncMock).toHaveBeenCalledTimes(1)
-    expect(commandExecFileAsyncMock).toHaveBeenCalledWith(
-      'gh',
+    expect(ghExecFileAsyncMock).toHaveBeenCalledTimes(1)
+    expect(ghExecFileAsyncMock).toHaveBeenCalledWith(
       ['auth', 'token', '--user', 'Alice', '--hostname', 'github.com'],
       expect.objectContaining({ timeout: 10_000 })
     )
   })
 
   it('fails closed without ambient fallback and invalidates cache', async () => {
-    commandExecFileAsyncMock.mockRejectedValue(new Error('nope'))
+    ghExecFileAsyncMock.mockRejectedValue(new Error('nope'))
     await expect(
       resolveGhAccountToken({ host: 'github.com', user: 'Alice' })
     ).rejects.toMatchObject({ code: 'gh_bound_account_unavailable' })
     invalidateGhAccountTokenCache({ host: 'github.com', user: 'Alice' })
-    commandExecFileAsyncMock.mockResolvedValue({ stdout: 'fresh', stderr: '' })
+    ghExecFileAsyncMock.mockResolvedValue({ stdout: 'fresh', stderr: '' })
     await expect(resolveGhAccountToken({ host: 'github.com', user: 'Alice' })).resolves.toBe(
       'fresh'
     )
   })
 
   it('does not negative-cache transient resolve failures', async () => {
-    commandExecFileAsyncMock.mockRejectedValueOnce(
+    ghExecFileAsyncMock.mockRejectedValueOnce(
       Object.assign(new Error('gh timed out'), { code: 'ETIMEDOUT' })
     )
     await expect(
       resolveGhAccountToken({ host: 'github.com', user: 'Alice' })
     ).rejects.toMatchObject({ code: 'gh_bound_account_unavailable' })
-    commandExecFileAsyncMock.mockResolvedValue({ stdout: 'recovered\n', stderr: '' })
+    ghExecFileAsyncMock.mockResolvedValue({ stdout: 'recovered\n', stderr: '' })
     await expect(resolveGhAccountToken({ host: 'github.com', user: 'Alice' })).resolves.toBe(
       'recovered'
     )
@@ -124,7 +123,7 @@ describe('gh-account-token', () => {
     await expect(
       resolveGhAccountToken({ host: 'github.com', user: 'Alice' })
     ).rejects.toMatchObject({ code: 'gh_multi_account_unsupported' })
-    expect(commandExecFileAsyncMock).not.toHaveBeenCalled()
+    expect(ghExecFileAsyncMock).not.toHaveBeenCalled()
   })
 
   it('never puts the token into Error messages', () => {

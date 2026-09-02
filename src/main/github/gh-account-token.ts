@@ -4,7 +4,7 @@
  * Why: Part A injects tokens only into the gh child — never process-wide —
  * via `gh auth token --user --hostname`. Tokens are never logged.
  */
-import { commandExecFileAsync } from '../git/runner'
+import { ghExecFileAsync } from '../git/runner'
 import { addWslEnvKeys } from '../../shared/wsl-env'
 import {
   ghTokenEnvVarForHost,
@@ -143,8 +143,8 @@ export async function resolveGhAccountToken(
   try {
     const resolveEnv = stripAmbientGhTokenEnv(process.env)
     resolveEnv.GH_PROMPT_DISABLED = resolveEnv.GH_PROMPT_DISABLED ?? '1'
-    const { stdout } = await commandExecFileAsync(
-      'gh',
+    // Why: `auth` argv never gets a bound env injected, so this cannot recurse into the binding.
+    const { stdout } = await ghExecFileAsync(
       ['auth', 'token', '--user', binding.user, '--hostname', binding.host],
       {
         cwd: normalizedTarget.cwd,

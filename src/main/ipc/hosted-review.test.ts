@@ -513,20 +513,27 @@ describe('registerHostedReviewHandlers', () => {
         branch: 'feature/pr'
       })
 
-      const expected = { localGitExecOptions: { ghAccount: boundRepo.ghAccount } }
+      // Why: main attaches an admission tier per handler; the binding must ride alongside it.
+      const creationExpected = {
+        localGitExecOptions: { admissionTier: 'interactive', ghAccount: boundRepo.ghAccount }
+      }
       expect(createHostedReviewMock).toHaveBeenCalledWith(
         worktreePath,
         expect.anything(),
         'ssh-1',
-        expected
+        creationExpected
       )
       expect(createStackedHostedReviewMock).toHaveBeenCalledWith(
         worktreePath,
         expect.anything(),
         'ssh-1',
-        expected
+        creationExpected
       )
-      expect(getHostedReviewForBranchMock).toHaveBeenCalledWith(expect.objectContaining(expected))
+      expect(getHostedReviewForBranchMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          localGitExecOptions: { admissionTier: 'background', ghAccount: boundRepo.ghAccount }
+        })
+      )
     })
 
     it('leaves an unbound repo on the ambient account', async () => {
@@ -541,9 +548,9 @@ describe('registerHostedReviewHandlers', () => {
         branch: 'feature/pr'
       })
 
-      expect(getHostedReviewForBranchMock.mock.calls[0][0]).not.toHaveProperty(
-        'localGitExecOptions'
-      )
+      expect(
+        getHostedReviewForBranchMock.mock.calls[0][0].localGitExecOptions?.ghAccount
+      ).toBeUndefined()
     })
   })
 

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { commandExecFileAsyncMock } = vi.hoisted(() => ({
-  commandExecFileAsyncMock: vi.fn()
+const { ghExecFileAsyncMock } = vi.hoisted(() => ({
+  ghExecFileAsyncMock: vi.fn()
 }))
 
 vi.mock('../git/runner', () => ({
-  commandExecFileAsync: commandExecFileAsyncMock
+  ghExecFileAsync: ghExecFileAsyncMock
 }))
 
 import {
@@ -18,7 +18,7 @@ import {
 describe('gh-capability-state', () => {
   beforeEach(() => {
     clearGhCapabilityStateForTests()
-    commandExecFileAsyncMock.mockReset()
+    ghExecFileAsyncMock.mockReset()
   })
 
   afterEach(() => {
@@ -31,20 +31,19 @@ describe('gh-capability-state', () => {
   })
 
   it('reports supported when help lists --user', async () => {
-    commandExecFileAsyncMock.mockResolvedValue({
+    ghExecFileAsyncMock.mockResolvedValue({
       stdout: 'Usage: gh auth token [--user login]',
       stderr: ''
     })
     await expect(getGhMultiAccountCapability()).resolves.toBe('supported')
-    expect(commandExecFileAsyncMock).toHaveBeenCalledWith(
-      'gh',
+    expect(ghExecFileAsyncMock).toHaveBeenCalledWith(
       ['auth', 'token', '--help'],
       expect.objectContaining({ timeout: 10_000 })
     )
   })
 
   it('reports unsupported when help omits --user', async () => {
-    commandExecFileAsyncMock.mockResolvedValue({
+    ghExecFileAsyncMock.mockResolvedValue({
       stdout: 'Usage: gh auth token',
       stderr: ''
     })
@@ -52,16 +51,16 @@ describe('gh-capability-state', () => {
   })
 
   it('caches per runtime and invalidates on request', async () => {
-    commandExecFileAsyncMock.mockResolvedValue({
+    ghExecFileAsyncMock.mockResolvedValue({
       stdout: 'Usage: gh auth token [--user login]',
       stderr: ''
     })
     await getGhMultiAccountCapability({ wslDistro: 'Ubuntu' })
     await getGhMultiAccountCapability({ wslDistro: 'Ubuntu' })
-    expect(commandExecFileAsyncMock).toHaveBeenCalledTimes(1)
+    expect(ghExecFileAsyncMock).toHaveBeenCalledTimes(1)
 
     invalidateGhMultiAccountCapability({ wslDistro: 'Ubuntu' })
     await getGhMultiAccountCapability({ wslDistro: 'Ubuntu' })
-    expect(commandExecFileAsyncMock).toHaveBeenCalledTimes(2)
+    expect(ghExecFileAsyncMock).toHaveBeenCalledTimes(2)
   })
 })
