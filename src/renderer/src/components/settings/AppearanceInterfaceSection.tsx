@@ -285,8 +285,7 @@ export function AppearanceInterfaceSection({
                     'settings.appearance.notchStatus.title',
                     'Show Agent Status at the Notch'
                   )}
-                  // Why: opt-in — it is a permanently visible always-on-top surface, and this
-                  // switch is the only way to dismiss it.
+                  // Why: the only way to dismiss a permanently visible always-on-top surface.
                   description={translate(
                     'settings.appearance.notchStatus.description',
                     'Pin live agent counts beside the camera, and keep them updating while the Orca window is closed.'

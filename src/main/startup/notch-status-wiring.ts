@@ -21,6 +21,8 @@ import {
   NOTCH_REVEAL_PANE_CHANNEL,
   type NotchFocusPaneRequest
 } from '../../shared/notch/notch-snapshot'
+import { FLOATING_TERMINAL_WORKTREE_ID } from '../../shared/constants'
+import { getWorktreePathBasenameFromId } from '../../shared/worktree/id'
 import { folderWorkspaceKey } from '../../shared/workspace-scope'
 import { mainProcessState as state } from './main-process-state'
 
@@ -35,13 +37,17 @@ let notchQuitCommitted = false
 let notchRestorePending = false
 
 function getWorkspaceDisplayName(worktreeId: string): string | null {
+  if (worktreeId === FLOATING_TERMINAL_WORKTREE_ID) {
+    return 'Floating terminal'
+  }
   const store = state.store
   return (
-    store?.getWorktreeMeta(worktreeId)?.displayName ??
+    store?.getWorktreeMeta(worktreeId)?.displayName?.trim() ||
     store
       ?.getFolderWorkspaces()
-      .find((workspace) => folderWorkspaceKey(workspace.id) === worktreeId)?.name ??
-    null
+      .find((workspace) => folderWorkspaceKey(workspace.id) === worktreeId)?.name ||
+    // Unrenamed checkouts carry no meta name; the sidebar shows their folder too.
+    getWorktreePathBasenameFromId(worktreeId)
   )
 }
 
