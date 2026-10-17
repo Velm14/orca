@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useAppStore } from '@/store'
-import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
+import { revealHostTerminalPane } from '@/hooks/ipc-events/terminal-pane-reveal-ipc-bridge'
 
 /**
  * Routes the app window to a pane the user clicked in the notch panel.
@@ -23,8 +23,13 @@ export function useNotchRevealBridge(): void {
 
   useEffect(() => {
     const unsubscribe = window.api.notch?.onRevealPane?.((args) => {
-      useAppStore.getState().setActiveWorktree(args.worktreeId)
-      activateTabAndFocusPane(args.tabId, args.leafId, { flashFocusedPane: true })
+      // Why the shared reveal: it also opens the floating panel and paired-server workspaces.
+      revealHostTerminalPane({
+        worktreeId: args.worktreeId,
+        tabId: args.tabId,
+        leafId: args.leafId,
+        executionHostId: null
+      })
     })
     // Why: main buffers a reveal until this ack. did-finish-load fires before React commits
     // this effect, and ipcRenderer does not queue, so without the handshake a row click with
