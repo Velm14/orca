@@ -52,7 +52,6 @@ describe('useMobileSessionViewMode', () => {
   let controller: MobileSessionViewModeController | null = null
 
   beforeEach(() => {
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true
     vi.mocked(loadDefaultSessionView).mockReset().mockResolvedValue('terminal')
     vi.mocked(readSessionViewOverridesPreference)
       .mockReset()
@@ -177,7 +176,8 @@ describe('useMobileSessionViewMode', () => {
     })
   })
 
-  it('merges a toggle made during load with the other persisted overrides', async () => {
+  it('merges an explicit terminal choice made during load with the other persisted overrides', async () => {
+    vi.mocked(loadDefaultSessionView).mockResolvedValue('chat')
     const overridesLoad = deferred<Map<string, MobileSessionView>>()
     vi.mocked(readSessionViewOverridesPreference).mockReturnValue(
       overridesLoad.promise.then((overrides) => ({ overrides, loaded: true }))
@@ -191,9 +191,9 @@ describe('useMobileSessionViewMode', () => {
       await Promise.resolve()
     })
 
-    act(() => controller?.toggleTabChatView('new-tab'))
-    expect(controller?.isTabChatView('new-tab')).toBe(true)
-    expect(updateSessionViewOverride).toHaveBeenCalledWith('h', 'w', 'new-tab', 'chat')
+    act(() => controller?.setTabView('new-tab', 'terminal'))
+    expect(controller?.isTabChatView('new-tab')).toBe(false)
+    expect(updateSessionViewOverride).toHaveBeenCalledWith('h', 'w', 'new-tab', 'terminal')
 
     await act(async () => {
       overridesLoad.resolve(new Map([['saved-tab', 'chat']]))
@@ -202,7 +202,7 @@ describe('useMobileSessionViewMode', () => {
     })
 
     expect(controller?.isTabChatView('saved-tab')).toBe(true)
-    expect(controller?.isTabChatView('new-tab')).toBe(true)
+    expect(controller?.isTabChatView('new-tab')).toBe(false)
   })
 
   it('toggles from the fail-closed view while overrides load under a chat default', async () => {

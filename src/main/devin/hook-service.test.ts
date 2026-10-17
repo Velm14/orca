@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { parse as parseJsonc } from 'jsonc-parser'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -17,6 +18,7 @@ vi.mock('os', async () => {
 
 import { DevinHookService } from './hook-service'
 import {
+  applyDevinManagedHooks,
   getDevinConfigPath,
   getDevinManagedCommand,
   getDevinManagedScriptPath
@@ -104,7 +106,45 @@ describe('DevinHookService', () => {
     const status = new DevinHookService().install()
 
     expect(status.state).toBe('installed')
-    expect(JSON.parse(readFileSync(configPath, 'utf8')).hooks.UserPromptSubmit).toBeDefined()
+    // Why: parse as JSONC, not JSON — asserting with JSON.parse would only pass once the
+    // comment had been stripped, which is the regression this test exists to catch.
+    expect(parseJsonc(readFileSync(configPath, 'utf8')).hooks.UserPromptSubmit).toBeDefined()
+  })
+
+  it('keeps user comments and unrelated formatting when installing and removing', () => {
+    const configPath = getDevinConfigPath()
+    mkdirSync(dirname(configPath), { recursive: true })
+    writeFileSync(
+      configPath,
+      `{
+  // keep me: chosen deliberately
+  "permissions": { "mode": "normal" },
+  /* block comment */
+  "hooks": {
+    // the user's own hook
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "mine.sh" }] }]
+  }
+}
+`
+    )
+
+    const service = new DevinHookService()
+    service.install()
+
+    const installed = readFileSync(configPath, 'utf8')
+    expect(installed).toContain('// keep me: chosen deliberately')
+    expect(installed).toContain('/* block comment */')
+    expect(installed).toContain("// the user's own hook")
+    expect(installed).toContain('mine.sh')
+    expect(parseJsonc(installed).permissions.mode).toBe('normal')
+    expect(parseJsonc(installed).hooks.UserPromptSubmit).toBeDefined()
+
+    service.remove()
+
+    const removed = readFileSync(configPath, 'utf8')
+    expect(removed).toContain('// keep me: chosen deliberately')
+    expect(removed).toContain('mine.sh')
+    expect(parseJsonc(removed).hooks.UserPromptSubmit).toBeUndefined()
   })
 
   it('surfaces read_config_from overlap in status detail', () => {
@@ -132,6 +172,40 @@ describe('DevinHookService', () => {
       const decoded = Buffer.from(encoded!, 'base64').toString('utf16le')
       expect(decoded).toContain(`Test-Path -LiteralPath '${scriptPath}' -PathType Leaf`)
       expect(decoded).toContain('[Console]::In.ReadToEnd() | Out-Null')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: previous })
+    }
+  })
+
+  it('registers a forward-slash cmd path on Windows and replaces the legacy backslash entry', () => {
+    const previous = process.platform
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      const scriptPath = 'C:\\Users\\ada\\.orca\\agent-hooks\\devin-hook.cmd'
+      const command = getDevinManagedCommand(scriptPath)
+      // Why: Git Bash strips backslashes from a bare path; forward slashes survive every host.
+      expect(command).toBe('C:/Users/ada/.orca/agent-hooks/devin-hook.cmd')
+      // A UNC home is cmd-safe but has no drive letter, so it keeps the encoded launcher.
+      expect(
+        getDevinManagedCommand('\\\\server\\share\\ada\\.orca\\agent-hooks\\devin-hook.cmd')
+      ).toMatch(/ -EncodedCommand \S+$/)
+
+      const next = applyDevinManagedHooks(
+        {
+          hooks: {
+            Stop: [
+              { hooks: [{ type: 'command', command: scriptPath }] },
+              { hooks: [{ type: 'command', command: 'C:\\tools\\user-hook.cmd' }] }
+            ]
+          }
+        },
+        command,
+        'devin-hook.cmd'
+      )
+      expect(next.hooks?.Stop?.flatMap((definition) => definition.hooks ?? [])).toEqual([
+        { type: 'command', command: 'C:\\tools\\user-hook.cmd' },
+        expect.objectContaining({ command })
+      ])
     } finally {
       Object.defineProperty(process, 'platform', { value: previous })
     }

@@ -1,25 +1,14 @@
 import type * as React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { resetAgentStartupDelayedDeliveryForTests } from '@/lib/agent-startup-delayed-delivery'
+import {
+  installTerminalTestGlobals,
+  restoreTerminalTestGlobals
+} from './pty-connection-test-environment'
 
 async function flushAsyncTicks(count = 6): Promise<void> {
   for (let i = 0; i < count; i++) {
     await Promise.resolve()
   }
-}
-
-async function drainFakeTimerWork(limit = 20): Promise<void> {
-  await flushAsyncTicks(20)
-  if (!vi.isFakeTimers()) {
-    return
-  }
-  for (let iteration = 0; iteration < limit && vi.getTimerCount() > 0; iteration += 1) {
-    await vi.runOnlyPendingTimersAsync()
-    await flushAsyncTicks(20)
-  }
-  vi.clearAllTimers()
-  await flushAsyncTicks(20)
-  vi.clearAllTimers()
 }
 
 const LEAF_1 = '11111111-1111-4111-8111-111111111111' as const
@@ -32,6 +21,7 @@ function leafIdForPane(paneId: number): string {
 type ConnectCallbacks = {
   onReattachDetermined?: () => void
   onConnect?: () => void
+  onStreamRecovered?: () => void
   onData?: (
     data: string,
     meta?: { seq?: number; rawLength?: number; background?: boolean; droppedOutput?: boolean }
@@ -63,7 +53,6 @@ type MockTransport = {
 
 const scheduleRuntimeGraphSync = vi.fn()
 const shouldSeedCacheTimerOnInitialTitle = vi.fn(() => false)
-const scheduleTerminalWebglAtlasRecovery = vi.fn()
 const toastInfo = vi.fn()
 const notifyCodexPaneBoundForStaleSweep = vi.fn()
 
@@ -86,10 +75,6 @@ vi.mock('@/store', () => ({
       }
     }
   }
-}))
-
-vi.mock('./terminal-webgl-atlas-recovery', () => ({
-  scheduleTerminalWebglAtlasRecovery
 }))
 
 vi.mock('@/lib/agent-status', async (importOriginal) => {
@@ -329,12 +314,7 @@ function createDeps(overrides: Record<string, unknown> = {}) {
             : [...current, ptyId]
       mockStoreState.ptyIdsByTabId = { ...byTab, [tabId]: next }
     }),
-    markWorktreeUnread: vi.fn(),
-    markTerminalTabUnread: vi.fn(),
-    markTerminalPaneUnread: vi.fn(),
-    clearWorktreeUnread: vi.fn(),
-    clearTerminalTabUnread: vi.fn(),
-    clearTerminalPaneUnread: vi.fn(),
+    markTerminalBell: vi.fn(),
     dispatchNotification: vi.fn(),
     onShowSessionRestoredBanner: vi.fn(),
     setCacheTimerStartedAt: vi.fn(),
@@ -384,6 +364,7 @@ type RemotePaneDrive = {
   disposable: { dispose: () => void }
   deliver: (data: string, seq: number) => void
   setOutputPaused: (paused: boolean) => void
+  recoverStream: () => void
   writtenChunks: () => string[]
 }
 
@@ -401,9 +382,11 @@ async function connectHiddenRemoteAgentPane(
   const capturedOutputPauseCallback: {
     current: ((paused: boolean, supported: boolean) => void) | null
   } = { current: null }
+  const capturedStreamRecoveredCallback: { current: (() => void) | null } = { current: null }
   transport.connect.mockImplementation(async ({ callbacks }: { callbacks?: ConnectCallbacks }) => {
     capturedDataCallback.current = callbacks?.onData ?? null
     capturedOutputPauseCallback.current = callbacks?.onOutputPauseChanged ?? null
+    capturedStreamRecoveredCallback.current = callbacks?.onStreamRecovered ?? null
     return REMOTE_PTY_ID
   })
   transportFactoryQueue.push(transport)
@@ -420,6 +403,7 @@ async function connectHiddenRemoteAgentPane(
     disposable,
     deliver: (data, seq) => capturedDataCallback.current?.(data, { seq, rawLength: data.length }),
     setOutputPaused: (paused) => capturedOutputPauseCallback.current?.(paused, true),
+    recoverStream: () => capturedStreamRecoveredCallback.current?.(),
     writtenChunks: () => pane.terminal.write.mock.calls.map(([data]) => String(data))
   }
 }
@@ -453,13 +437,10 @@ async function advanceModernRetryProbe(): Promise<void> {
 }
 
 describe('remote hidden-output restore outcomes', () => {
-  const originalRequestAnimationFrame = globalThis.requestAnimationFrame
-  const originalCancelAnimationFrame = globalThis.cancelAnimationFrame
-  const originalDocument = globalThis.document
-
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules()
     vi.clearAllMocks()
+    await installTerminalTestGlobals()
     transportFactoryQueue = []
     createdTransportOptions = []
     storeSubscribers = []
@@ -516,13 +497,11 @@ describe('remote hidden-output restore outcomes', () => {
         >
         return byPaneKey[entry.paneKey]?.launchConfig
       }),
-      getAgentLaunchConfigForStatusMetadata: vi.fn(() => undefined),
       clearSleepingAgentSession: vi.fn((paneKey: string) => {
         delete (mockStoreState.sleepingAgentSessionsByPaneKey as Record<string, unknown>)[paneKey]
       }),
       registerAgentLaunchConfig: vi.fn(),
       clearAgentLaunchConfig: vi.fn(),
-      markWorktreeUnread: vi.fn(),
       observeTerminalGitHubPullRequestLink: vi.fn(),
       recordTerminalInput: vi.fn(),
       setAgentStatus: vi.fn(),
@@ -535,9 +514,8 @@ describe('remote hidden-output restore outcomes', () => {
       clearPaneForegroundAgent: vi.fn((paneKey: string) => {
         delete (mockStoreState.paneForegroundAgentByPaneKey as Record<string, unknown>)[paneKey]
       }),
-      markTerminalTabUnread: vi.fn(),
-      markTerminalPaneUnread: vi.fn(),
-      markAgentCompletionPaneUnread: vi.fn()
+      markTerminalBell: vi.fn(),
+      markAgentAttentionUnread: vi.fn()
     }
     ;(globalThis as unknown as { window: unknown }).window = {
       api: {
@@ -598,29 +576,28 @@ describe('remote hidden-output restore outcomes', () => {
     globalThis.cancelAnimationFrame = vi.fn()
   })
 
-  afterEach(async () => {
-    await drainFakeTimerWork()
-    vi.useRealTimers()
-    vi.restoreAllMocks()
-    if (originalRequestAnimationFrame) {
-      globalThis.requestAnimationFrame = originalRequestAnimationFrame
-    } else {
-      delete (globalThis as { requestAnimationFrame?: typeof requestAnimationFrame })
-        .requestAnimationFrame
-    }
-    if (originalCancelAnimationFrame) {
-      globalThis.cancelAnimationFrame = originalCancelAnimationFrame
-    } else {
-      delete (globalThis as { cancelAnimationFrame?: typeof cancelAnimationFrame })
-        .cancelAnimationFrame
-    }
-    if (originalDocument) {
-      globalThis.document = originalDocument
-    } else {
-      delete (globalThis as { document?: Document }).document
-    }
-    delete (globalThis as unknown as { window?: unknown }).window
-    resetAgentStartupDelayedDeliveryForTests()
+  afterEach(restoreTerminalTestGlobals)
+
+  it('[modern] repaints a recovered visible pane from the retained host buffer', async () => {
+    const serializeBuffer = vi.fn()
+    const serializeBufferOutcome = vi.fn().mockResolvedValue({
+      availability: { kind: 'snapshot' },
+      snapshot: HOST_SNAPSHOT
+    })
+    const drive = await connectHiddenRemoteAgentPane(serializeBuffer, serializeBufferOutcome)
+    ;(drive.deps.isVisibleRef as { current: boolean }).current = true
+
+    drive.recoverStream()
+    await flushAsyncTicks(20)
+
+    expect(serializeBufferOutcome).toHaveBeenCalledTimes(1)
+    // Why: the multiplexer only moves its gap baseline for images a pane repaints from.
+    expect(serializeBufferOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ repaintsPane: true })
+    )
+    expect(drive.writtenChunks().join('')).toContain(HOST_SNAPSHOT_MARKER)
+    expect(serializeBuffer).not.toHaveBeenCalled()
+    drive.disposable.dispose()
   })
 
   it('[modern] accepts an empty snapshot as successful recovery without a loss banner', async () => {

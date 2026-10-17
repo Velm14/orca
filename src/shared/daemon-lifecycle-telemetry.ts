@@ -3,13 +3,14 @@
 // subprocess and never crosses into the app, so every reason here is one the app
 // itself decides: a startup replace, or an observed death→respawn.
 
-// Startup launcher replaced a still-connectable daemon (each maps 1:1 to a `daemon-init.ts` decision).
+// Startup launcher replaced a still-connectable daemon (each maps 1:1 to a `daemon-replacement-preflight.ts` decision).
 export const DAEMON_REPLACE_REASONS = [
   'unhealthy_resolver',
   'stale_bundle',
   'different_app_path',
   'failed_health_check',
-  'severed_tcc_attribution'
+  'severed_tcc_attribution',
+  'severed_host_image'
 ] as const
 export type DaemonReplaceReason = (typeof DAEMON_REPLACE_REASONS)[number]
 
@@ -18,11 +19,6 @@ export const DAEMON_RETIRE_REASONS = ['died_respawn'] as const
 export type DaemonRetireReason = (typeof DAEMON_RETIRE_REASONS)[number]
 
 export const DAEMON_LIFECYCLE_TRANSITIONS = ['replaced', 'retired'] as const
-
-export const DAEMON_LIFECYCLE_REASONS = [
-  ...DAEMON_REPLACE_REASONS,
-  ...DAEMON_RETIRE_REASONS
-] as const
 
 // Bucketed, never raw: exact live-session counts could fingerprint heavy users. `unknown` when
 // the count couldn't be verified (null) — e.g. a wedged daemon or an already-dead respawn target.

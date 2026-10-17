@@ -3,6 +3,7 @@ import type { AppState } from '@/store'
 import { useAppStore } from '@/store'
 import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
+import { revealWorkspaceSurface } from '@/lib/workspace-surface-reveal'
 import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
 import { parseRemoteRuntimePtyId } from '@/runtime/runtime-terminal-stream'
 import { buildWrappedLogicalLine, rangeForParsedFileLink } from './wrapped-terminal-link-ranges'
@@ -11,6 +12,15 @@ import {
   focusRuntimeOrchestrationTask,
   ORCHESTRATION_TASK_PREFIX
 } from './terminal-orchestration-task-links'
+import {
+  isTerminalLinkActionActivation,
+  isTerminalLinkDirectActivation
+} from './terminal-link-activation'
+import {
+  requestTerminalLinkAction,
+  type TerminalLinkActionContext
+} from './terminal-link-action-request'
+import { translate } from '@/i18n/i18n'
 
 export { extractOrchestrationTaskLinks } from './terminal-orchestration-task-links'
 export type { ParsedOrchestrationTaskLink } from './terminal-orchestration-task-links'
@@ -36,6 +46,7 @@ type TerminalHandleLinkProviderDeps = {
   getTerminal: () => Terminal | null
   getRuntimeEnvironmentId: () => string | null
   linkTooltip: HTMLElement
+  getLinkActionContext?: () => TerminalLinkActionContext | null
 }
 
 const TERMINAL_HANDLE_PREFIX = 'term_'
@@ -131,11 +142,8 @@ export function focusRendererTerminalHandle(
     return false
   }
 
-  store.setActiveWorktree(target.worktreeId)
-  store.markWorktreeVisited(target.worktreeId)
-  store.setActiveView('terminal')
-  store.setActiveTabType('terminal')
-  store.revealWorktreeInSidebar(target.worktreeId)
+  revealWorkspaceSurface(store, target.worktreeId)
+  store.setActiveTabType('terminal', target.worktreeId)
   if (target.leafId) {
     activateTabAndFocusPane(target.tabId, target.leafId)
   } else {
@@ -188,15 +196,44 @@ export function createTerminalHandleLinkProvider(
             range,
             text: parsed.text,
             activate: (event) => {
-              if (!isTerminalHandleLinkActivation(event)) {
+              const directActivation = isTerminalLinkDirectActivation(event)
+              const actionActivation = isTerminalLinkActionActivation(event)
+              if (!directActivation && !actionActivation) {
                 return
               }
-              event?.preventDefault()
-              void activateParsedLink(parsed, deps.getRuntimeEnvironmentId())
-              terminal.clearSelection()
+              let handled = false
+              if (directActivation) {
+                event?.preventDefault()
+                void activateParsedLink(parsed, deps.getRuntimeEnvironmentId())
+                handled = true
+              } else {
+                handled = requestTerminalLinkAction(event, deps.getLinkActionContext?.(), {
+                  destination: parsed.text,
+                  kind: parsed.kind,
+                  primary: {
+                    label:
+                      parsed.kind === 'terminal'
+                        ? translate(
+                            'auto.components.terminal.pane.TerminalLinkActionPopover.switchTerminal',
+                            'Switch terminal'
+                          )
+                        : translate(
+                            'auto.components.terminal.pane.TerminalLinkActionPopover.openTaskTerminal',
+                            'Open task terminal'
+                          ),
+                    run: () => activateParsedLink(parsed, deps.getRuntimeEnvironmentId())
+                  }
+                })
+              }
+              if (handled) {
+                terminal.clearSelection()
+              }
             },
             hover: () => {
-              deps.linkTooltip.textContent = `${parsed.text} (${getTerminalHandleFocusHint()})`
+              const showActions = deps.getLinkActionContext
+                ? deps.getLinkActionContext() !== null
+                : true
+              deps.linkTooltip.textContent = `${parsed.text} (${getTerminalHandleFocusHint(showActions)})`
               deps.linkTooltip.style.display = ''
             },
             leave: () => {
@@ -252,20 +289,14 @@ function ptyIdMatchesTerminalHandle(
   return ptyEnvironmentId === targetEnvironmentId
 }
 
-function getTerminalHandleFocusHint(): string {
+function getTerminalHandleFocusHint(showActions: boolean): string {
+  const prefix = showActions ? 'Click for actions or ' : ''
   return navigator.userAgent.includes('Mac')
-    ? '⌘+click to switch terminal'
-    : 'Ctrl+click to switch terminal'
+    ? `${prefix}⌘+click to switch terminal`
+    : `${prefix}Ctrl+click to switch terminal`
 }
 
-function isTerminalHandleLinkActivation(
-  event: Pick<MouseEvent, 'metaKey' | 'ctrlKey'> | undefined
-): boolean {
-  const isMac = navigator.userAgent.includes('Mac')
-  return isMac ? Boolean(event?.metaKey) : Boolean(event?.ctrlKey)
-}
-
-async function focusRuntimeTerminalHandle(
+export async function focusRuntimeTerminalHandle(
   handle: string,
   runtimeEnvironmentId: string | null
 ): Promise<void> {

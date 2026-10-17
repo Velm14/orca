@@ -2,17 +2,21 @@ import React, { useCallback, useMemo, useState } from 'react'
 import { Popover, PopoverContent } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import { translate } from '@/i18n/i18n'
-import type {
-  NeedsSetupProjectHostOption,
-  ProjectHostSetupOption
+import {
+  getProjectHostSetupSelectionKey,
+  type NeedsSetupProjectHostOption,
+  type ProjectHostSetupOption,
+  type ReadyProjectHostSetupOption
 } from '@/lib/project-host-setup-options'
+import type { ExecutionHostId } from '../../../../shared/execution-host'
 import { isWithinComboboxRoot, useTypeAheadCombobox } from './use-type-ahead-combobox'
 import { COMBOBOX_POPOVER_SURFACE } from './type-ahead-combobox-styles'
 import {
   ConnectHostButton,
   HostRowIcon,
   NeedsSetupHostIcon,
-  RunTargetRow
+  RunTargetRow,
+  SetLocationButton
 } from './RunTargetComboboxRow'
 import {
   buildRunTargetRows,
@@ -27,6 +31,7 @@ import RunTargetField from './RunTargetField'
 type RunTargetComboboxProps = {
   hostOptions: readonly ProjectHostSetupOption[]
   hostValue: string | null
+  hostExecutionHostId?: ExecutionHostId | null
   onHostChange?: (setupId: string) => void
   recipes: EphemeralVmRecipeOption[]
   recipeValue: string | null
@@ -34,6 +39,7 @@ type RunTargetComboboxProps = {
   onAddRemoteServer?: () => void
   onAddSshHost?: () => void
   onConnectHost?: (option: NeedsSetupProjectHostOption) => Promise<void> | void
+  onSetLocation?: (option: NeedsSetupProjectHostOption) => void
 }
 
 const ROOT_ATTRIBUTE = 'data-run-target-combobox-root'
@@ -50,13 +56,15 @@ const ROOT_ATTRIBUTE = 'data-run-target-combobox-root'
 export default function RunTargetCombobox({
   hostOptions,
   hostValue,
+  hostExecutionHostId,
   onHostChange,
   recipes,
   recipeValue,
   onRecipeChange,
   onAddRemoteServer,
   onAddSshHost,
-  onConnectHost
+  onConnectHost,
+  onSetLocation
 }: RunTargetComboboxProps): React.JSX.Element {
   const [submenu, setSubmenu] = useState<'recipes' | 'add-host' | null>(null)
   // Track in-flight connects per host so one stalling connect never blocks the others.
@@ -80,8 +88,14 @@ export default function RunTargetCombobox({
     () => hostOptions.filter((option) => option.kind === 'ready'),
     [hostOptions]
   )
+  const isSelected = (candidate: { id: string; hostId: string }): boolean =>
+    candidate.id === hostValue && (!hostExecutionHostId || candidate.hostId === hostExecutionHostId)
   const selectedHost =
-    readyHostOptions.find((option) => option.id === hostValue) ?? readyHostOptions[0] ?? null
+    readyHostOptions.find(isSelected) ??
+    // Why: a selection on a merged machine's other id still belongs to that machine's one row.
+    readyHostOptions.find((option) => option.aliasSetups?.some(isSelected)) ??
+    readyHostOptions[0] ??
+    null
   const selectedRecipe = recipes.find((recipe) => recipe.id === recipeValue) ?? null
   const armedRow = rows.find((row) => row.key === armedKey) ?? rows[0] ?? null
   // Only a committed selection paints the field; typing replaces it.
@@ -94,8 +108,8 @@ export default function RunTargetCombobox({
   }, [combobox])
 
   const selectHost = useCallback(
-    (setupId: string): void => {
-      onHostChange?.(setupId)
+    (option: ReadyProjectHostSetupOption): void => {
+      onHostChange?.(getProjectHostSetupSelectionKey(option))
       onRecipeChange?.(null)
       close()
     },
@@ -134,6 +148,19 @@ export default function RunTargetCombobox({
     [connectingHostIds, onConnectHost]
   )
 
+  // Why: reached from the row body, its inline button, and Enter — keep one path
+  // so all three close the picker before handing off to the nested dialog.
+  const setLocation = useCallback(
+    (option: NeedsSetupProjectHostOption): void => {
+      if (!option.canSetLocation || !onSetLocation) {
+        return
+      }
+      close()
+      onSetLocation(option)
+    },
+    [close, onSetLocation]
+  )
+
   /** Commits a row, or opens its submenu when the row is a submenu row. */
   const activate = useCallback(
     (key: string | null): void => {
@@ -142,16 +169,17 @@ export default function RunTargetCombobox({
         return
       }
       if (row.kind === 'ready') {
-        selectHost(row.option.id)
+        selectHost(row.option)
         return
       }
       if (row.kind === 'needs-setup') {
-        // Not ready: selecting is a no-op, the Connect action is the way forward.
+        // Not ready: setting the location is the only way forward from the row itself.
+        setLocation(row.option)
         return
       }
       setSubmenu(row.kind === 'recipes' ? 'recipes' : 'add-host')
     },
-    [rows, selectHost]
+    [rows, selectHost, setLocation]
   )
 
   const handleKeyDown = useCallback(
@@ -278,19 +306,20 @@ export default function RunTargetCombobox({
                     label={row.option.label}
                     detail={row.option.path}
                     armed={isArmed}
-                    current={selectedRecipe === null && row.option.id === selectedHost?.id}
+                    current={selectedRecipe === null && row.option === selectedHost}
                     optionId={optionId}
                     onArm={() => {
                       arm(row.key)
                       setSubmenu(null)
                     }}
-                    onCommit={() => selectHost(row.option.id)}
+                    onCommit={() => selectHost(row.option)}
                   />
                 )
               }
               if (row.kind === 'needs-setup') {
                 const connecting = connectingHostIds.has(row.option.hostId)
                 const hasConnect = Boolean(row.option.connectAction && onConnectHost)
+                const hasSetLocation = Boolean(row.option.canSetLocation && onSetLocation)
                 return (
                   <RunTargetRow
                     key={row.key}
@@ -302,10 +331,9 @@ export default function RunTargetCombobox({
                       />
                     }
                     label={row.option.label}
-                    // Why: a Connect button on the row already says the host
-                    // isn't connected, so its detail line only repeats that.
-                    // Rows without the action still need theirs to explain why.
-                    detail={hasConnect ? '' : row.option.detail}
+                    // Why: Connect / Set project location already say the next
+                    // step, so the detail line would only repeat that.
+                    detail={hasConnect || hasSetLocation ? '' : row.option.detail}
                     armed={isArmed}
                     current={false}
                     dimmed
@@ -314,12 +342,17 @@ export default function RunTargetCombobox({
                       arm(row.key)
                       setSubmenu(null)
                     }}
-                    onCommit={() => {}}
+                    onCommit={() => setLocation(row.option)}
                     trailing={
-                      row.option.connectAction && onConnectHost ? (
+                      hasConnect ? (
                         <ConnectHostButton
                           connecting={connecting}
                           onConnect={() => void connectHost(row.option)}
+                        />
+                      ) : hasSetLocation ? (
+                        <SetLocationButton
+                          hostLabel={row.option.label}
+                          onSetLocation={() => setLocation(row.option)}
                         />
                       ) : undefined
                     }

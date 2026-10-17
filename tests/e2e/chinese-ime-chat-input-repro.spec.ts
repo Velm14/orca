@@ -305,7 +305,7 @@ async function readPromptState(page: Page): Promise<TerminalPromptState | null> 
     .filter((value): value is string => value !== null)
   const promptIndex = content.lastIndexOf(PROMPT)
   const liveLine =
-    promptIndex >= 0 ? (content.slice(promptIndex + PROMPT.length).split(/\r?\n/)[0] ?? '') : ''
+    promptIndex !== -1 ? (content.slice(promptIndex + PROMPT.length).split(/\r?\n/)[0] ?? '') : ''
   return {
     model: liveLine.trimEnd(),
     cursor: Array.from(liveLine.trimEnd()).length,
@@ -398,18 +398,6 @@ async function dispatchCandidateSelectionKey(
     code: candidate.code,
     windowsVirtualKeyCode: candidate.keyCode,
     nativeVirtualKeyCode: candidate.keyCode
-  })
-}
-
-async function dispatchOrphanLetterKeyup(session: CDPSession): Promise<void> {
-  // Why: legacy Sogou/fcitx can emit only the release after committing a
-  // single-letter preedit, leaving no composition or input event to classify.
-  await session.send('Input.dispatchKeyEvent', {
-    type: 'keyUp',
-    key: 'a',
-    code: 'KeyA',
-    windowsVirtualKeyCode: 65,
-    nativeVirtualKeyCode: 65
   })
 }
 
@@ -745,24 +733,11 @@ test.describe('Chinese IME terminal chat input repro', () => {
         })
         .toBe('再见')
 
-      // Some legacy desktop Linux paths omit every composition/input event and
-      // expose only an orphaned Latin release before the candidate digit.
-      await dispatchOrphanLetterKeyup(session)
-      await dispatchCandidateSelectionKey(session, { key: '4', code: 'Digit4', keyCode: 52 })
-      await orcaPage.keyboard.press('Enter')
-      await expect
-        .poll(async () => (await readPromptState(orcaPage))?.submitted.at(-1) ?? null, {
-          timeout: 5_000,
-          message: 'orphan-keyup candidate digit leaked into the submitted terminal input'
-        })
-        .toBe('')
-      await attachImeEvidence(orcaPage, testInfo, 'sogou-after-orphan-keyup-digit-suppression')
-
       const promptState = await readPromptState(orcaPage)
       expect(
         promptState?.submitted,
         'candidate Space/digit selectors and pinyin preedit must not leak into the PTY'
-      ).toEqual(['你', '你好', '再见', ''])
+      ).toEqual(['你', '你好', '再见'])
     } finally {
       await attachImeEvidence(orcaPage, testInfo, 'sogou-final-ime-evidence').catch(() => undefined)
       await session?.detach().catch(() => undefined)

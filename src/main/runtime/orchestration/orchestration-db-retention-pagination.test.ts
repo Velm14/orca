@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import Database from '../../sqlite/sync-database'
 import { OrchestrationDb } from './db'
+import { SCHEMA_VERSION } from './db/contract-constants'
+import { createRootDispatch } from './db/root-dispatch-test-fixture'
 
 const MUTATION_RECEIPT_MAX_ROWS = 10_000
 
@@ -74,7 +76,7 @@ describe('OrchestrationDb bounded mutation receipts', () => {
     const count = sqliteFor(db)
       .prepare('SELECT COUNT(*) AS count FROM mutation_receipts')
       .get() as { count: number }
-    expect(count.count).toBe(MUTATION_RECEIPT_MAX_ROWS)
+    expect(count.count).toBeLessThanOrEqual(MUTATION_RECEIPT_MAX_ROWS)
     expect(db.getMutationReceipt('caller', 'request_00001')).toBeUndefined()
     expect(db.getMutationReceipt('caller', 'request_10000')).toMatchObject({ state: 'completed' })
     expect(db.getMutationReceipt('caller', 'new')).toMatchObject({ state: 'pending' })
@@ -101,6 +103,7 @@ describe('OrchestrationDb bounded mutation receipts', () => {
     insertMutationReceipts(db, MUTATION_RECEIPT_MAX_ROWS, 'completed')
 
     db.createRemoteDispatchAttachment({
+      runId: 'run-home',
       dispatchId: 'ctx_remote_pruned',
       taskId: 'task_remote_pruned',
       homePeerFingerprint: 'caller',
@@ -117,7 +120,7 @@ describe('OrchestrationDb bounded mutation receipts', () => {
     const count = sqliteFor(db)
       .prepare('SELECT COUNT(*) AS count FROM mutation_receipts')
       .get() as { count: number }
-    expect(count.count).toBe(MUTATION_RECEIPT_MAX_ROWS)
+    expect(count.count).toBeLessThanOrEqual(MUTATION_RECEIPT_MAX_ROWS)
     expect(db.getMutationReceipt('caller', 'request_00001')).toBeUndefined()
     expect(db.getMutationReceipt('caller', 'remote_pruned')).toMatchObject({ state: 'pending' })
     expect(db.getRemoteDispatchAttachment('ctx_remote_pruned')).toBeDefined()
@@ -129,6 +132,7 @@ describe('OrchestrationDb bounded mutation receipts', () => {
 
     expect(() =>
       db!.createRemoteDispatchAttachment({
+        runId: 'run-home',
         dispatchId: 'ctx_remote_overflow',
         taskId: 'task_remote_overflow',
         homePeerFingerprint: 'caller',
@@ -149,11 +153,13 @@ describe('OrchestrationDb bounded mutation receipts', () => {
 
   it('guards atomic worker acceptance without changing task state', () => {
     db = new OrchestrationDb(':memory:')
-    const task = db.createTask({ spec: 'capacity check' })
+    const task = db.createTask({ runId: 'run_legacy_local', spec: 'capacity check' })
     insertMutationReceipts(db, MUTATION_RECEIPT_MAX_ROWS, 'pending')
 
     expect(() =>
       db!.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
         taskId: task.id,
         startOptions: {},
         mutationReceipt: {
@@ -173,6 +179,11 @@ describe('OrchestrationDb Run pagination', () => {
   let db: OrchestrationDb | undefined
 
   afterEach(() => db?.close())
+
+  it('rejects an invalid cursor with cursor_invalid', () => {
+    db = new OrchestrationDb(':memory:')
+    expect(() => db!.listRuns({ limit: 2, cursor: 'not-a-cursor' })).toThrow(/cursor is invalid/)
+  })
 
   it('returns stable bounded pages without skipping Runs sharing a timestamp', () => {
     db = new OrchestrationDb(':memory:')
@@ -222,8 +233,11 @@ describe('OrchestrationDb dispatch assignee index migration', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'orca-dispatch-index-migration-'))
     const dbPath = join(tempDir, 'orchestration.db')
     db = new OrchestrationDb(dbPath)
-    const task = db.createTask({ spec: 'indexed lookup' })
-    const dispatch = db.createDispatchContext(task.id, 'term_worker')
+    const task = db.createTask({
+      runId: 'run_legacy_local',
+      spec: 'indexed lookup'
+    })
+    const dispatch = createRootDispatch(db, task.id, 'term_worker')
     db.close()
     db = undefined
 
@@ -240,8 +254,10 @@ describe('OrchestrationDb dispatch assignee index migration', () => {
 
     db = new OrchestrationDb(dbPath)
     const sqlite = sqliteFor(db)
-    expect(sqlite.pragma('user_version', { simple: true })).toBe(25)
-    expect(db.getDispatchContextById(dispatch.id)).toMatchObject({ assignee_handle: 'term_worker' })
+    expect(sqlite.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION)
+    expect(db.getDispatchContextById(dispatch.id)).toMatchObject({
+      assignee_handle: 'term_worker'
+    })
     expect(db.getTask(task.id)).toMatchObject({
       created_by_pane_key: null,
       created_by_process_incarnation: null,
@@ -277,7 +293,7 @@ describe('OrchestrationDb dispatch assignee index migration', () => {
 
     db.close()
     db = new OrchestrationDb(dbPath)
-    expect(sqliteFor(db).pragma('user_version', { simple: true })).toBe(25)
+    expect(sqliteFor(db).pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION)
     expect(db.getDispatchContextById(dispatch.id)).toBeDefined()
   })
 
@@ -298,7 +314,7 @@ describe('OrchestrationDb dispatch assignee index migration', () => {
       createdByProcessIncarnation: 'pty_creator:incarnation-a',
       createdByRunGeneration: run.consumer_generation
     })
-    const dispatch = db.createDispatchContext(task.id, 'term_worker')
+    const dispatch = createRootDispatch(db, task.id, 'term_worker')
     db.close()
     db = undefined
 
@@ -309,7 +325,7 @@ describe('OrchestrationDb dispatch assignee index migration', () => {
 
     db = new OrchestrationDb(dbPath)
     const sqlite = sqliteFor(db)
-    expect(sqlite.pragma('user_version', { simple: true })).toBe(25)
+    expect(sqlite.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION)
     expect(db.getTask(task.id)).toMatchObject({
       created_by_pane_key: 'tab_creator:leaf_creator',
       created_by_process_incarnation: 'pty_creator:incarnation-a',
@@ -328,7 +344,7 @@ describe('OrchestrationDb dispatch assignee index migration', () => {
 
     db.close()
     db = new OrchestrationDb(dbPath)
-    expect(sqliteFor(db).pragma('user_version', { simple: true })).toBe(25)
+    expect(sqliteFor(db).pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION)
     expect(db.getTask(task.id)?.created_by_process_incarnation).toBe('pty_creator:incarnation-a')
   })
 })

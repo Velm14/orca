@@ -3,8 +3,8 @@
 import { createElement, useEffect, act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getDefaultOnboardingState } from '../../../../shared/constants'
-import type { OnboardingState } from '../../../../shared/types'
+import { getDefaultOnboardingState } from '../../../../shared/onboarding-defaults'
+import type { OnboardingState } from '../../../../shared/onboarding-state-types'
 
 const trackMock = vi.hoisted(() => vi.fn())
 
@@ -15,6 +15,7 @@ vi.mock('@/lib/telemetry', () => ({
 import {
   buildCompletedOnboardingNotificationSettings,
   buildOnboardingDismissedPayload,
+  onboardingChatPermissionSetting,
   useCloseWith,
   type DismissedExtras,
   trackOnboardingDismissed
@@ -23,11 +24,12 @@ import type { StepNumber } from './use-onboarding-flow-types'
 
 type CloseWithCallback = (
   outcome: 'completed' | 'dismissed',
-  checklist: Partial<OnboardingState['checklist']>,
   lastStepReached: StepNumber,
-  completedPath?: 'open_folder' | 'clone_url' | 'add_project_modal',
+  completedPath?: 'add_project_modal',
   dismissedExtras?: DismissedExtras
 ) => Promise<boolean>
+
+const probeStartTime = Date.now()
 
 function makeOnboardingState(): OnboardingState {
   return {
@@ -48,8 +50,7 @@ function setApi(api: {
 function CloseWithProbe(props: { onReady: (closeWith: CloseWithCallback) => void }): null {
   const closeWith = useCloseWith({
     onOnboardingChange: vi.fn(),
-    onboardingChecklist: makeOnboardingState().checklist,
-    startTimeRef: { current: Date.now() },
+    startTimeRef: { current: probeStartTime },
     setError: vi.fn()
   })
   useEffect(() => props.onReady(closeWith), [closeWith, props])
@@ -124,7 +125,9 @@ describe('onboarding flow persistence', () => {
       suppressWhenFocused: false,
       customSoundId: 'two-tone',
       customSoundPath: null,
-      customSoundVolume: 60
+      customSoundVolume: 60,
+      mutedNotificationSourceIds: [],
+      notifyHiddenWorkspaces: false
     })
 
     expect(notifications).toEqual({
@@ -134,8 +137,19 @@ describe('onboarding flow persistence', () => {
       suppressWhenFocused: false,
       customSoundId: 'two-tone',
       customSoundPath: null,
-      customSoundVolume: 60
+      customSoundVolume: 60,
+      mutedNotificationSourceIds: [],
+      notifyHiddenWorkspaces: false
     })
+  })
+
+  // Yolo mode says agents run without asking, chats included; a replay left untouched keeps them.
+  it('sets new chats from a flipped Yolo mode, keeping a custom mode and an untouched replay', () => {
+    const set = (mode: string) => ({ nativeChatPermissionMode: mode })
+    expect(onboardingChatPermissionSetting('full-access', false, true)).toEqual(set('ask'))
+    expect(onboardingChatPermissionSetting('ask', true, true)).toEqual(set('full-access'))
+    expect(onboardingChatPermissionSetting('ask', true, false)).toEqual({})
+    expect(onboardingChatPermissionSetting('auto', false, true)).toEqual({})
   })
 
   it('schedules the star toast after every completed close path', async () => {
@@ -145,7 +159,7 @@ describe('onboarding flow persistence', () => {
     }))
 
     await act(async () => {
-      await closeWith?.('completed', {}, 5)
+      await closeWith?.('completed', 5)
     })
 
     const api = (

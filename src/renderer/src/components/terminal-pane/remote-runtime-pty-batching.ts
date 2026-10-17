@@ -9,6 +9,9 @@ import {
 export type RemoteRuntimePtyBatcher = {
   push: (data: string) => boolean
   hasPendingValidation: () => boolean
+  /** Input accepted but not yet flushed or still validating. */
+  hasPendingInput: () => boolean
+  enqueueAfterValidation: (action: () => void) => void
   drain: () => Promise<void>
   takePending: () => string
   flush: () => void
@@ -127,6 +130,24 @@ export function createRemoteRuntimePtyTextBatcher(
     }
   }
 
+  const enqueueAfterValidation = (action: () => void): void => {
+    const queuedVersion = validationVersion
+    const previousTail = validationTail ?? Promise.resolve()
+    const guardedTail = previousTail.then(() => {
+      if (validationVersion === queuedVersion) {
+        action()
+      }
+    })
+    const nextTail = guardedTail
+      .catch(() => {})
+      .finally(() => {
+        if (validationTail === nextTail) {
+          validationTail = null
+        }
+      })
+    validationTail = nextTail
+  }
+
   return {
     push(data: string): boolean {
       if (!data) {
@@ -150,6 +171,8 @@ export function createRemoteRuntimePtyTextBatcher(
     // `pending`. `takePending()` cannot see it, so callers that must preserve
     // byte order (sendInputImmediate) check this before bypassing the queue.
     hasPendingValidation: (): boolean => validationTail !== null,
+    hasPendingInput: (): boolean => pending.length > 0 || validationTail !== null,
+    enqueueAfterValidation,
     drain,
     takePending,
     flush,

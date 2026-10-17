@@ -1,11 +1,20 @@
 import {
   keybindingMatchesAction,
   type KeybindingInput,
+  type KeybindingActionId,
   type KeybindingMatchOptions,
   type KeybindingOverrides,
   type TerminalShortcutPolicy
 } from '../../../../shared/keybindings'
 import type { WindowsShiftEnterEncoding } from './terminal-windows-shift-enter'
+import {
+  resolveTerminalOptionShortcutAction,
+  type MacOptionAsAlt
+} from './terminal-option-shortcut-policy'
+import type { OptionKeyLocationState } from '../../lib/keyboard-layout/option-key-location-state'
+import type { TerminalOptionKittyRelease } from './terminal-option-kitty-release'
+
+export type { MacOptionAsAlt } from './terminal-option-shortcut-policy'
 
 export type TerminalShortcutEvent = {
   key: string
@@ -15,14 +24,15 @@ export type TerminalShortcutEvent = {
   altKey: boolean
   shiftKey: boolean
   repeat?: boolean
+  isComposing?: boolean
+  keyCode?: number
+  getModifierState?: (key: string) => boolean
 }
-
-export type MacOptionAsAlt = 'true' | 'false' | 'left' | 'right'
 
 // Shared close-chord predicate: the terminal pane (L3) and the floating panel's focused-terminal
 // branch (L2) both treat terminal.closePane OR a terminal-scope tab.close as "close the active
 // pane," so the two layers can't diverge. Callers pass the options each binding needs —
-// terminal.closePane is context-free; tab.close is scoped to the terminal surface.
+// both bindings use the caller’s terminal priority policy.
 export function isTerminalPaneCloseChord(
   event: KeybindingInput,
   platform: NodeJS.Platform,
@@ -36,23 +46,9 @@ export function isTerminalPaneCloseChord(
   )
 }
 
-// Why: macOS composition rewrites event.key for punctuation, so map event.code to the unmodified char for Esc+ sequences.
-const PUNCTUATION_CODE_MAP: Record<string, string> = {
-  Period: '.',
-  Comma: ',',
-  Slash: '/',
-  Backslash: '\\',
-  Semicolon: ';',
-  Quote: "'",
-  BracketLeft: '[',
-  BracketRight: ']',
-  Minus: '-',
-  Equal: '=',
-  Backquote: '`'
-}
-
 export type TerminalShortcutAction =
   | { type: 'copySelection' }
+  | { type: 'selectAll' }
   | { type: 'toggleSearch' }
   | { type: 'clearActivePane' }
   | { type: 'focusPane'; direction: 'next' | 'previous' }
@@ -63,26 +59,26 @@ export type TerminalShortcutAction =
   | { type: 'closeActivePane' }
   | { type: 'splitActivePane'; direction: 'vertical' | 'horizontal' }
   | { type: 'scrollViewport'; position: 'top' | 'bottom' }
-  | { type: 'sendInput'; data: string }
+  | {
+      type: 'sendInput'
+      data: string
+      optionKittyRelease?: TerminalOptionKittyRelease
+      consumeOptionKeyUp?: boolean
+    }
+  | { type: 'trackNativeOptionDeadKey' }
   | { type: 'switchInputSource' }
 
-/** Kitty keyboard protocol modifier field: 1 + shift(1) + alt(2). */
-function kittyAltModifiers(shiftKey: boolean): number {
-  return shiftKey ? 4 : 3
-}
-
-/** Un-shifted ASCII character for a physical key code (letters, digits, punctuation map), or undefined. */
-function resolveUnshiftedCharacterForCode(code: string | undefined): string | undefined {
-  if (!code) {
-    return undefined
-  }
-  if (code.startsWith('Key') && code.length === 4) {
-    return code.charAt(3).toLowerCase()
-  }
-  if (code.startsWith('Digit') && code.length === 6) {
-    return code.charAt(5)
-  }
-  return PUNCTUATION_CODE_MAP[code]
+/**
+ * `ESC CR` is both Orca's legacy Shift+Enter and xterm's Alt+Enter, and pi reads it as
+ * one or the other depending on whether ITS kitty query was answered, which the pane
+ * cannot observe (STA-7701, pi-0-74-*-esc-cr fixtures). An app that armed
+ * modifyOtherKeys decodes xterm's `CSI 27 ; mod ; 13 ~` the same way in both states.
+ */
+function encodeModifyOtherKeysEnter(
+  getModifyOtherKeys: (() => number) | undefined,
+  modifier: 2 | 3
+): string | null {
+  return (getModifyOtherKeys?.() ?? 0) > 0 ? `\x1b[27;${modifier};13~` : null
 }
 
 /**
@@ -93,82 +89,90 @@ export function resolveTerminalShortcutAction(
   event: TerminalShortcutEvent,
   isMac: boolean,
   macOptionAsAlt: MacOptionAsAlt = 'false',
-  optionKeyLocation: number = 0,
+  optionKeyLocations: OptionKeyLocationState = 0,
   isWindows: boolean = false,
   keybindings?: KeybindingOverrides,
-  // Why: lazy so execution-host lookup (local native Windows ConPTY) runs only on Ctrl+Arrow, not every keystroke.
+  // Why: lazy so local ConPTY lookup runs only for Ctrl+Arrow and Ctrl+Enter.
   isLocalWindowsConptyPane?: () => boolean,
-  // Why: gates Option-as-Alt compensation on the app's own kitty-protocol (CSI > u) opt-in, so shells keep composition.
-  isKittyKeyboardActivePane?: () => boolean,
-  // Why: the physical-code table above is US QWERTY; resolve via Chromium's KeyboardLayoutMap for Dvorak/Colemak/AZERTY layouts.
-  layoutBaseCharacterForCode?: (code: string) => string | undefined,
+  // Why: exact flags distinguish ordinary kitty negotiation from report-all mode.
+  getKittyKeyboardFlagsActivePane?: () => number,
+  // Why: composition is the difference between event.key and the current layout with Option absent.
+  layoutCharacterForCode?: (code: string, shifted: boolean) => string | undefined,
   // Why: lazy so agent-state lookup for the pane's Windows encoding runs only on Shift+Enter, not every keystroke.
   getWindowsShiftEnterEncoding?: () => WindowsShiftEnterEncoding,
   // Why: keybindings follow the client OS, but byte protocols follow the PTY host — they differ for macOS clients on Windows runtimes.
   isWindowsTerminalHost: () => boolean = () => isWindows,
-  // Why: gates the tab.close pane-close alias — under terminal-first a remapped tab.close yields to the shell (terminal.closePane, scope terminal, still closes).
-  terminalShortcutPolicy: TerminalShortcutPolicy = 'orca-first'
+  // Why: terminal-first yields editing and TUI chords before xterm encodes them.
+  terminalShortcutPolicy: TerminalShortcutPolicy = 'orca-first',
+  // Why: query-only Droid/Grok consumers need CSI-u even when the live kitty flags remain inactive.
+  hasCtrlEnterCsiUAuthority?: () => boolean,
+  // Why: pi arms modifyOtherKeys when its kitty query goes unanswered; see encodeModifyOtherKeysEnter.
+  getModifyOtherKeysActivePane?: () => number
 ): TerminalShortcutAction | null {
   const platform: NodeJS.Platform = isMac ? 'darwin' : isWindows ? 'win32' : 'linux'
+  const matchOptions: KeybindingMatchOptions = { context: 'terminal', terminalShortcutPolicy }
+  const matches = (action: KeybindingActionId): boolean =>
+    keybindingMatchesAction(action, event, platform, keybindings, matchOptions)
 
   // Why: capture this chord even on repeat without blocking the OS default input-source switch.
-  if (keybindingMatchesAction('terminal.switchInputSource', event, platform, keybindings)) {
+  if (matches('terminal.switchInputSource')) {
     return { type: 'switchInputSource' }
   }
 
-  if (!event.repeat) {
-    if (keybindingMatchesAction('terminal.copySelection', event, platform, keybindings)) {
-      return { type: 'copySelection' }
-    }
+  // Why: held select-all and copy keydowns must remain claimed until keyup so
+  // Kitty event reporting cannot encode their repeat or release into the PTY.
+  if (matches('terminal.selectAll')) {
+    return { type: 'selectAll' }
+  }
 
-    if (keybindingMatchesAction('terminal.search', event, platform, keybindings)) {
+  if (matches('terminal.copySelection')) {
+    return { type: 'copySelection' }
+  }
+
+  if (!event.repeat) {
+    if (matches('terminal.search')) {
       return { type: 'toggleSearch' }
     }
 
-    if (keybindingMatchesAction('terminal.clear', event, platform, keybindings)) {
+    if (matches('terminal.clear')) {
       return { type: 'clearActivePane' }
     }
 
-    if (keybindingMatchesAction('terminal.focusPreviousPane', event, platform, keybindings)) {
+    if (matches('terminal.focusPreviousPane')) {
       return { type: 'focusPane', direction: 'previous' }
     }
 
-    if (keybindingMatchesAction('terminal.focusNextPane', event, platform, keybindings)) {
+    if (matches('terminal.focusNextPane')) {
       return { type: 'focusPane', direction: 'next' }
     }
 
-    if (keybindingMatchesAction('terminal.equalizePaneSizes', event, platform, keybindings)) {
+    if (matches('terminal.equalizePaneSizes')) {
       return { type: 'equalizePaneSizes' }
     }
 
-    if (keybindingMatchesAction('terminal.expandPane', event, platform, keybindings)) {
+    if (matches('terminal.expandPane')) {
       return { type: 'toggleExpandActivePane' }
     }
 
-    if (keybindingMatchesAction('terminal.setTitle', event, platform, keybindings)) {
+    if (matches('terminal.setTitle')) {
       return { type: 'setTitle' }
     }
 
-    if (keybindingMatchesAction('terminal.clearPaneTitle', event, platform, keybindings)) {
+    if (matches('terminal.clearPaneTitle')) {
       return { type: 'clearPaneTitle' }
     }
 
     // Why: recognize the active tab.close binding as a pane-close alias too, so a user who remaps
     // tab.close alone still closes the focused split pane (never the whole tab); L2 always defers to us.
-    if (
-      isTerminalPaneCloseChord(event, platform, keybindings, undefined, {
-        context: 'terminal',
-        terminalShortcutPolicy
-      })
-    ) {
+    if (isTerminalPaneCloseChord(event, platform, keybindings, matchOptions, matchOptions)) {
       return { type: 'closeActivePane' }
     }
 
-    if (keybindingMatchesAction('terminal.splitRight', event, platform, keybindings)) {
+    if (matches('terminal.splitRight')) {
       return { type: 'splitActivePane', direction: 'vertical' }
     }
 
-    if (keybindingMatchesAction('terminal.splitDown', event, platform, keybindings)) {
+    if (matches('terminal.splitDown')) {
       return { type: 'splitActivePane', direction: 'horizontal' }
     }
   }
@@ -184,8 +188,29 @@ export function resolveTerminalShortcutAction(
     const windowsHost = isWindowsTerminalHost()
     const hasTrustedWindowsCsiU = windowsHost && getWindowsShiftEnterEncoding?.() === 'csi-u'
     // Why: CSI-u is application input, not universal; without trusted Windows evidence, require active KKP negotiation.
-    const canSendCsiU = hasTrustedWindowsCsiU || isKittyKeyboardActivePane?.() === true
-    return { type: 'sendInput', data: canSendCsiU ? '\x1b[13;2u' : '\x1b\r' }
+    const canSendCsiU = hasTrustedWindowsCsiU || (getKittyKeyboardFlagsActivePane?.() ?? 0) > 0
+    if (canSendCsiU) {
+      return { type: 'sendInput', data: '\x1b[13;2u' }
+    }
+    return {
+      type: 'sendInput',
+      data: encodeModifyOtherKeysEnter(getModifyOtherKeysActivePane, 2) ?? '\x1b\r'
+    }
+  }
+
+  if (
+    !event.metaKey &&
+    !event.ctrlKey &&
+    event.altKey &&
+    !event.shiftKey &&
+    event.key === 'Enter' &&
+    (getKittyKeyboardFlagsActivePane?.() ?? 0) === 0
+  ) {
+    // Why: without modifyOtherKeys, xterm's own `ESC CR` stays the Alt+Enter encoding.
+    const data = encodeModifyOtherKeysEnter(getModifyOtherKeysActivePane, 3)
+    if (data) {
+      return { type: 'sendInput', data }
+    }
   }
 
   if (
@@ -195,8 +220,16 @@ export function resolveTerminalShortcutAction(
     !event.shiftKey &&
     event.key === 'Enter'
   ) {
-    // Why: xterm.js collapses Ctrl+Enter to a bare CR, so forward kitty CSI-u (modifier 5 = Ctrl) so the chord reaches TUIs; no Windows fallback yet (#2418).
-    return { type: 'sendInput', data: '\x1b[13;5u' }
+    const localWindowsConpty = isLocalWindowsConptyPane?.() === true
+    // Why: preserve query-only TUI chords elsewhere; local ConPTY shells require negotiation or trusted consumer evidence (#12329).
+    const canSendCsiU =
+      !localWindowsConpty ||
+      (getKittyKeyboardFlagsActivePane?.() ?? 0) > 0 ||
+      hasCtrlEnterCsiUAuthority?.() === true
+    return {
+      type: 'sendInput',
+      data: canSendCsiU ? '\x1b[13;5u' : '\r'
+    }
   }
 
   if (
@@ -240,7 +273,7 @@ export function resolveTerminalShortcutAction(
     event.key === 'Backspace'
   ) {
     // Why: a kitty-protocol TUI binds the CSI 127;3u xterm emits natively; the legacy \x1b\x7f fallback would bypass it.
-    if (isKittyKeyboardActivePane?.()) {
+    if ((getKittyKeyboardFlagsActivePane?.() ?? 0) > 0) {
       return null
     }
     return { type: 'sendInput', data: '\x1b\x7f' }
@@ -251,10 +284,11 @@ export function resolveTerminalShortcutAction(
     !event.ctrlKey &&
     event.altKey &&
     !event.shiftKey &&
+    event.code?.startsWith('Numpad') !== true &&
     (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
   ) {
     // Why: a kitty-protocol TUI binds alt+arrow via xterm's native CSI 1;3D/C; \eb/\ef would reach it as alt+b/f.
-    if (isKittyKeyboardActivePane?.()) {
+    if ((getKittyKeyboardFlagsActivePane?.() ?? 0) > 0) {
       return null
     }
     // Why: readline doesn't bind xterm's \e[1;3D/C for alt+←/→, so translate to \eb/\ef for word-nav (iTerm2 "Esc+" behavior).
@@ -277,49 +311,15 @@ export function resolveTerminalShortcutAction(
     return { type: 'sendInput', data: event.key === 'ArrowLeft' ? '\x1bb' : '\x1bf' }
   }
 
-  // Why: macOptionIsMeta stays off so non-US layouts can compose @/€; match event.code since composition rewrites event.key.
-  if (isMac && !event.metaKey && !event.ctrlKey && event.altKey && macOptionAsAlt !== 'true') {
-    // Why: kitty pane — encode the physical base key as CSI-u; the composed codepoint (alt+π) binds nothing, Dead keys exempt to keep composition.
-    if (event.key !== 'Dead' && isKittyKeyboardActivePane?.()) {
-      const baseCharacter =
-        (event.code ? layoutBaseCharacterForCode?.(event.code) : undefined) ??
-        resolveUnshiftedCharacterForCode(event.code)
-      if (baseCharacter) {
-        return {
-          type: 'sendInput',
-          data: `\x1b[${baseCharacter.codePointAt(0)};${kittyAltModifiers(event.shiftKey)}u`
-        }
-      }
-    }
-
-    if (!event.shiftKey) {
-      // Why: event.location reflects the char key, not the held modifier, so the caller supplies Option's tracked keydown location.
-      const isLeftOption = optionKeyLocation === 1
-      const isRightOption = optionKeyLocation === 2
-
-      const shouldActAsMeta =
-        (macOptionAsAlt === 'left' && isLeftOption) || (macOptionAsAlt === 'right' && isRightOption)
-
-      if (shouldActAsMeta) {
-        const character = resolveUnshiftedCharacterForCode(event.code)
-        if (character) {
-          return { type: 'sendInput', data: `\x1b${character}` }
-        }
-      }
-
-      // Compose-side Option still needs the critical readline shortcuts (B/F/D) patched.
-      if (!shouldActAsMeta) {
-        if (event.code === 'KeyB') {
-          return { type: 'sendInput', data: '\x1bb' }
-        }
-        if (event.code === 'KeyF') {
-          return { type: 'sendInput', data: '\x1bf' }
-        }
-        if (event.code === 'KeyD') {
-          return { type: 'sendInput', data: '\x1bd' }
-        }
-      }
-    }
+  const optionAction = resolveTerminalOptionShortcutAction(event, {
+    isMac,
+    macOptionAsAlt,
+    optionKeyLocations,
+    getKittyKeyboardFlags: () => getKittyKeyboardFlagsActivePane?.() ?? 0,
+    layoutCharacterForCode
+  })
+  if (optionAction) {
+    return optionAction
   }
 
   return null

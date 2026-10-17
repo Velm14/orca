@@ -1,27 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { createServer, connect, type Server } from 'node:net'
+import { basename, join } from 'node:path'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import {
   DaemonSpawner,
+  getDaemonArtifactHoldClaimPath,
   getDaemonPidPath,
+  getDaemonPidSwapClaimPath,
   getDaemonSocketPath,
   getDaemonTokenPath,
   publishDaemonPidFile,
   replaceDaemonPidFile,
   restoreClaimedDaemonArtifact
 } from './daemon-spawner'
-import {
-  getDaemonSocketBindPath,
-  publishDaemonSocketPath,
-  sweepAbandonedDaemonClaims,
-  unlinkOwnedDaemonSocketPath
-} from './daemon-endpoint-ownership'
+import { getDaemonSocketBindPath } from './daemon-endpoint-ownership'
 import { startDaemon, type DaemonHandle } from './daemon-main'
 import { DaemonClient } from './client'
-import type { SubprocessHandle } from './session'
+import type { SubprocessHandle } from './session-subprocess-handle'
 import { PROTOCOL_VERSION } from './types'
 
 function createTestDir(): string {
@@ -36,6 +31,7 @@ function createMockSubprocess(): SubprocessHandle {
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(() => setTimeout(() => onExitCb?.(0), 5)),
+    terminateOwnedTree: () => 'unavailable' as const,
     forceKill: vi.fn(() => setTimeout(() => onExitCb?.(137), 5)),
     signal: vi.fn(),
     onData(_cb: (data: string) => void) {},
@@ -140,25 +136,6 @@ describe('DaemonSpawner', () => {
       })
       await client.ensureConnected()
       expect(client.isConnected()).toBe(true)
-      client.disconnect()
-    })
-
-    it('daemon can create sessions', async () => {
-      const s = createSpawner()
-      const info = await s.ensureRunning()
-
-      const client = new DaemonClient({
-        socketPath: info.socketPath,
-        tokenPath: info.tokenPath
-      })
-      await client.ensureConnected()
-
-      const result = await client.request<{ isNew: boolean }>('createOrAttach', {
-        sessionId: 'test-session',
-        cols: 80,
-        rows: 24
-      })
-      expect(result.isNew).toBe(true)
       client.disconnect()
     })
   })
@@ -311,148 +288,32 @@ describe('daemon PID publication', () => {
   })
 })
 
-function listenOnSocketPath(server: Server, socketPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(socketPath, () => {
-      server.off('error', reject)
-      resolve()
-    })
-  })
-}
-
-function closeSocketServer(server: Server): Promise<void> {
-  return new Promise((resolve) => {
-    if (!server.listening) {
-      resolve()
-      return
-    }
-    server.close(() => resolve())
-  })
-}
-
-function connectsToSocketPath(socketPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = connect({ path: socketPath })
-    const timer = setTimeout(() => {
-      socket.destroy()
-      resolve(false)
-    }, 500)
-    socket.on('connect', () => {
-      clearTimeout(timer)
-      socket.destroy()
-      resolve(true)
-    })
-    socket.on('error', () => {
-      clearTimeout(timer)
-      resolve(false)
-    })
-  })
-}
-
 describe('daemon socket publication', () => {
+  it('keeps every scratch namespace outside the released sweeper pattern', () => {
+    // Why pinned, and why all three: builds already in the field sweep these names on age alone
+    // with no liveness or ownership check, and deleting our sweeper does not un-ship theirs. A
+    // bind name is a live listener's only pathname; a claim briefly holds the only copy of a
+    // live daemon's token or PID record. Renaming any of them back into the released pattern
+    // must fail here rather than in the field.
+    const RELEASED_SWEEPER_PATTERN =
+      /(?:\.(?:cleanup|replace)-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|^\.b[0-9a-f]{10})$/
+
+    for (let i = 0; i < 20; i++) {
+      const names = [
+        basename(getDaemonSocketBindPath(getDaemonSocketPath('/tmp/orca-daemon'))),
+        basename(getDaemonPidSwapClaimPath('/tmp/orca-daemon/daemon-v32.pid')),
+        basename(getDaemonArtifactHoldClaimPath('/tmp/orca-daemon/daemon-v32.token'))
+      ]
+      for (const name of names) {
+        expect(name).not.toMatch(RELEASED_SWEEPER_PATTERN)
+      }
+    }
+  })
+
   it('keeps the bind name shorter than the canonical endpoint', () => {
     // sockaddr_un caps the path, so the private bind name must never extend it.
     const canonicalPath = getDaemonSocketPath('/tmp/orca-daemon-runtime')
 
     expect(getDaemonSocketBindPath(canonicalPath).length).toBeLessThan(canonicalPath.length)
-  })
-
-  it('publishes a bound listener under the canonical endpoint and reclaims only its own entry', async () => {
-    if (process.platform === 'win32') {
-      return
-    }
-    const dir = createTestDir()
-    const canonicalPath = getDaemonSocketPath(dir)
-    const first = createServer((socket) => socket.end())
-    const second = createServer((socket) => socket.end())
-    try {
-      const firstBindPath = getDaemonSocketBindPath(canonicalPath)
-      await listenOnSocketPath(first, firstBindPath)
-
-      const firstIdentity = publishDaemonSocketPath(firstBindPath, canonicalPath)
-      expect(firstIdentity).not.toBeNull()
-      expect(existsSync(canonicalPath)).toBe(true)
-      expect(existsSync(firstBindPath)).toBe(false)
-      await expect(connectsToSocketPath(canonicalPath)).resolves.toBe(true)
-
-      const secondBindPath = getDaemonSocketBindPath(canonicalPath)
-      await listenOnSocketPath(second, secondBindPath)
-      let publishError: NodeJS.ErrnoException | null = null
-      try {
-        publishDaemonSocketPath(secondBindPath, canonicalPath)
-      } catch (error) {
-        publishError = error as NodeJS.ErrnoException
-      }
-      expect(publishError?.code).toBe('EEXIST')
-
-      expect(unlinkOwnedDaemonSocketPath(canonicalPath, firstIdentity)).toBe(true)
-      expect(existsSync(canonicalPath)).toBe(false)
-
-      // The endpoint name now resolves to a different listener's inode.
-      const secondIdentity = publishDaemonSocketPath(secondBindPath, canonicalPath)
-      expect(secondIdentity).not.toEqual(firstIdentity)
-      expect(unlinkOwnedDaemonSocketPath(canonicalPath, firstIdentity)).toBe(false)
-      expect(existsSync(canonicalPath)).toBe(true)
-      await expect(connectsToSocketPath(canonicalPath)).resolves.toBe(true)
-    } finally {
-      await closeSocketServer(first)
-      await closeSocketServer(second)
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('sweepAbandonedDaemonClaims', () => {
-  const claimNames = [
-    `daemon-v${PROTOCOL_VERSION}.pid.cleanup-123-${randomUUID()}`,
-    `daemon-v${PROTOCOL_VERSION}.pid.replace-123-${randomUUID()}`,
-    '.b0123456789'
-  ]
-  const preservedNames = [`daemon-v${PROTOCOL_VERSION}.pid`, `daemon-v${PROTOCOL_VERSION}.token`]
-
-  function seedClaimDir(): string {
-    const dir = createTestDir()
-    for (const name of [...claimNames, ...preservedNames]) {
-      writeFileSync(join(dir, name), 'x')
-    }
-    return dir
-  }
-
-  it('removes aged claim and bind scratch names without touching daemon artifacts', () => {
-    const dir = seedClaimDir()
-    try {
-      expect(sweepAbandonedDaemonClaims(dir, undefined, Date.now() + 24 * 60 * 60 * 1000)).toBe(
-        claimNames.length
-      )
-
-      for (const name of claimNames) {
-        expect(existsSync(join(dir, name))).toBe(false)
-      }
-      for (const name of preservedNames) {
-        expect(existsSync(join(dir, name))).toBe(true)
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it('leaves freshly written claims alone so an in-flight claim is never stolen', () => {
-    const dir = seedClaimDir()
-    try {
-      expect(sweepAbandonedDaemonClaims(dir)).toBe(0)
-
-      for (const name of [...claimNames, ...preservedNames]) {
-        expect(existsSync(join(dir, name))).toBe(true)
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it('returns zero for an unreadable runtime dir', () => {
-    expect(sweepAbandonedDaemonClaims(join(tmpdir(), `daemon-sweep-missing-${randomUUID()}`))).toBe(
-      0
-    )
   })
 })

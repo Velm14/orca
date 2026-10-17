@@ -1,10 +1,16 @@
 import { useCallback, useRef } from 'react'
 import { track } from '@/lib/telemetry'
 import { useAppStore } from '@/store'
-import { ONBOARDING_FINAL_STEP, ONBOARDING_FLOW_VERSION } from '../../../../shared/constants'
+import {
+  ONBOARDING_FINAL_STEP,
+  ONBOARDING_FLOW_VERSION
+} from '../../../../shared/onboarding-defaults'
 import type { EventProps } from '../../../../shared/telemetry-events'
-import type { GlobalSettings, OnboardingState, TuiAgent } from '../../../../shared/types'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
+import type { OnboardingState } from '../../../../shared/onboarding-state-types'
+import type { TuiAgent } from '../../../../shared/tui-agent'
 import { applyAgentPermissionMode } from '../../../../shared/tui-agent-permissions'
+import type { AgentChatPermissionMode } from '../../../../shared/agent-chat-permission-mode'
 import type { StepId, StepNumber } from './use-onboarding-flow-types'
 
 export async function persistStep(
@@ -22,6 +28,18 @@ function selectedAgentOrBlank(agent: TuiAgent | null): TuiAgent | 'blank' {
   return agent ?? 'blank'
 }
 
+/** Yolo mode covers chats too, once flipped in this flow; like the Arguments it writes, a custom
+ *  new-chat mode is kept. */
+export function onboardingChatPermissionSetting(
+  current: AgentChatPermissionMode | undefined,
+  yolo: boolean,
+  chosen: boolean
+): Partial<Pick<GlobalSettings, 'nativeChatPermissionMode'>> {
+  return !chosen || current === 'accept-edits' || current === 'auto'
+    ? {}
+    : { nativeChatPermissionMode: yolo ? 'full-access' : 'ask' }
+}
+
 export function buildCompletedOnboardingNotificationSettings(
   notifications: GlobalSettings['notifications']
 ): GlobalSettings['notifications'] {
@@ -35,7 +53,6 @@ export function buildCompletedOnboardingNotificationSettings(
 
 type CloseWithDeps = {
   onOnboardingChange: (state: OnboardingState) => void
-  onboardingChecklist: OnboardingState['checklist']
   startTimeRef: { current: number }
   setError: (msg: string | null) => void
 }
@@ -67,12 +84,7 @@ export function trackOnboardingDismissed(
   track('onboarding_dismissed', buildOnboardingDismissedPayload(lastStepReached, dismissedExtras))
 }
 
-export function useCloseWith({
-  onOnboardingChange,
-  onboardingChecklist,
-  startTimeRef,
-  setError
-}: CloseWithDeps) {
+export function useCloseWith({ onOnboardingChange, startTimeRef, setError }: CloseWithDeps) {
   // Why: onboarding closes exactly once. On the final notifications step both
   // the "Add your first project" handoff (completed) and a click-off/Escape
   // dismissal (dismissed) can reach closeWith, and next()'s persist window
@@ -83,9 +95,8 @@ export function useCloseWith({
   return useCallback(
     async (
       outcome: 'completed' | 'dismissed',
-      checklist: Partial<OnboardingState['checklist']>,
       lastStepReached: StepNumber,
-      completedPath?: 'open_folder' | 'clone_url' | 'add_project_modal',
+      completedPath?: 'add_project_modal',
       dismissedExtras?: DismissedExtras
     ): Promise<boolean> => {
       if (closedRef.current) {
@@ -94,18 +105,12 @@ export function useCloseWith({
       closedRef.current = true
       let nextState: OnboardingState
       try {
-        // Why: main-process updateOnboarding already merges with current state,
-        // so spreading the local (potentially stale) onboarding.checklist would
-        // overwrite concurrent updates.
         nextState = await window.api.onboarding.update({
           flowVersion: ONBOARDING_FLOW_VERSION,
           closedAt: Date.now(),
           outcome,
           lastCompletedStep: outcome === 'completed' ? ONBOARDING_FINAL_STEP : -1,
-          checklist: {
-            ...checklist,
-            dismissed: outcome === 'dismissed'
-          }
+          checklist: { dismissed: outcome === 'dismissed' }
         })
       } catch (err) {
         // Why: the persist failed, so onboarding did not actually close — clear
@@ -124,22 +129,6 @@ export function useCloseWith({
           path: completedPath,
           total_duration_ms: total
         })
-        // Why: checklist items completed by the wizard itself must fire
-        // `activation_checklist_item_completed` so the post-wizard panel and
-        // analytics agree. Other items (ranFirstAgent, triedCmdJ, …) emit
-        // from their own product surfaces.
-        if (checklist.addedRepo && !onboardingChecklist.addedRepo) {
-          track('activation_checklist_item_completed', {
-            item: 'addedRepo',
-            time_since_completed_ms: 0
-          })
-        }
-        if (checklist.addedFolder && !onboardingChecklist.addedFolder) {
-          track('activation_checklist_item_completed', {
-            item: 'addedFolder',
-            time_since_completed_ms: 0
-          })
-        }
       }
       if (outcome === 'completed') {
         // Why: closeWith updates parent state synchronously from this hook's
@@ -152,7 +141,7 @@ export function useCloseWith({
       }
       return true
     },
-    [onOnboardingChange, onboardingChecklist, startTimeRef, setError]
+    [onOnboardingChange, startTimeRef, setError]
   )
 }
 
@@ -160,6 +149,8 @@ type PersistCurrentStepDeps = {
   currentStepId: StepId
   selectedAgent: TuiAgent | null
   yoloPermissions: boolean
+  /** Whether the person flipped Yolo mode in this flow; a replay left untouched keeps chats as set. */
+  yoloPermissionsChosen: { readonly current: boolean }
   theme: GlobalSettings['theme']
   settings: GlobalSettings | null
   updateSettings: (updates: Partial<GlobalSettings>) => Promise<void> | void
@@ -176,6 +167,7 @@ export function usePersistCurrentStep({
   currentStepId,
   selectedAgent,
   yoloPermissions,
+  yoloPermissionsChosen,
   theme,
   settings,
   updateSettings,
@@ -196,7 +188,12 @@ export function usePersistCurrentStep({
             mode: yoloPermissions ? 'yolo' : 'manual',
             agentDefaultArgs: settings.agentDefaultArgs,
             agentDefaultEnv: settings.agentDefaultEnv
-          })
+          }),
+          ...onboardingChatPermissionSetting(
+            settings.nativeChatPermissionMode,
+            yoloPermissions,
+            yoloPermissionsChosen.current
+          )
         })
         const choseAgent = defaultTuiAgent !== 'blank'
         const wasAlreadyChosen = onboardingChecklist.choseAgent
@@ -254,6 +251,7 @@ export function usePersistCurrentStep({
     theme,
     updateSettings,
     yoloPermissions,
+    yoloPermissionsChosen,
     setError
   ])
 }

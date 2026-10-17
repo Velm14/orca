@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react'
-import { AlertTriangle, Loader2, MonitorSmartphone, Server, ServerOff } from 'lucide-react'
+import { Loader2, MonitorSmartphone, Server, ServerOff } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   DropdownMenu,
@@ -14,152 +14,28 @@ import { translate } from '@/i18n/i18n'
 import { getHostDisplayLabelOverrides } from '../../../../shared/host-setting-overrides'
 import {
   isRuntimeOwnedSshTargetId,
-  toRuntimeExecutionHostId
+  toRuntimeExecutionHostId,
+  toSshExecutionHostId
 } from '../../../../shared/execution-host'
-import { isUserManagedRuntimeEnvironment } from '../../../../shared/runtime-environments'
-import { RuntimeHostStatusRow, type RuntimeHostConnectionState } from './RuntimeHostStatusRow'
+import { buildExecutionHostRegistry } from '../../../../shared/execution-host-registry'
+import { pickerExecutionHosts } from '../../../../shared/managed-orcad-execution-host'
+import { isListedRemoteServer } from '../../../../shared/runtime-environments'
+import { RuntimeHostStatusRow } from './RuntimeHostStatusRow'
+import { connectedHostCountLabel, connectingHostsLabel } from './ssh-status-segment-copy'
 import { SshTargetStatusRow } from './SshTargetStatusRow'
-import type { RemoteRuntimeSharedConnectionDiagnostics } from '../../../../shared/remote-runtime-shared-control-types'
-import { connectRuntimeEnvironmentAndRecordStatus } from './runtime-environment-explicit-connect'
-import { isConnectingSshStatus } from '@/ssh/ssh-connection-recoverability'
-
-type HostStatus = 'connected' | 'disconnected' | 'connecting'
-
-function overallStatus(
-  statuses: HostStatus[]
-): 'connected' | 'partial' | 'disconnected' | 'connecting' {
-  if (statuses.length === 0) {
-    return 'disconnected'
-  }
-  if (statuses.every((s) => s === 'connected')) {
-    return 'connected'
-  }
-  if (statuses.some((s) => s === 'connecting')) {
-    return 'connecting'
-  }
-  if (statuses.some((s) => s === 'connected')) {
-    return 'partial'
-  }
-  return 'disconnected'
-}
-
-function overallDotColor(
-  status: 'connected' | 'partial' | 'disconnected' | 'connecting',
-  connectedCount: number
-): string {
-  switch (status) {
-    case 'connected':
-      return 'bg-emerald-500'
-    case 'partial':
-      return connectedCount > 0 ? 'bg-emerald-500' : 'bg-muted-foreground/40'
-    case 'connecting':
-      return 'bg-yellow-500'
-    case 'disconnected':
-      return 'bg-muted-foreground/40'
-  }
-}
-
-function connectedHostCountLabel(count: number): string {
-  return `${count} ${count === 1 ? 'host' : 'hosts'}`
-}
-
-function sshStatusForOverall(status: SshConnectionStatus): HostStatus {
-  if (status === 'connected') {
-    return 'connected'
-  }
-  return isConnectingSshStatus(status) ? 'connecting' : 'disconnected'
-}
-
-function runtimeHostConnectionState({
-  hasStatus,
-  online,
-  remoteControl
-}: {
-  hasStatus: boolean
-  online: boolean
-  remoteControl?: RemoteRuntimeSharedConnectionDiagnostics | null
-}): RuntimeHostConnectionState {
-  if (!hasStatus) {
-    return 'checking'
-  }
-  if (remoteControl?.state === 'reconnecting') {
-    return 'reconnecting'
-  }
-  if (!online) {
-    return 'disconnected'
-  }
-  if (remoteControl?.state === 'closed' && remoteControl.lastError) {
-    return 'disconnected'
-  }
-  // Why: "connected" means attached/reachable, NOT "is the active default host".
-  // Both surfaces (this status bar and Settings > Remote Orca Servers) must agree
-  // on that single definition, or a reachable-but-not-active host reads
-  // "Connected" in one place and "Available" in the other. Active/default is a
-  // separate concept (surfaced elsewhere), so it must not change this state.
-  return 'connected'
-}
-
-function runtimeHostConnectionDetail(
-  remoteControl?: RemoteRuntimeSharedConnectionDiagnostics | null
-): string | undefined {
-  if (!remoteControl) {
-    return undefined
-  }
-  if (remoteControl.lastError) {
-    return remoteControl.lastError
-  }
-  if (remoteControl.lastClose?.reason) {
-    return translate(
-      'auto.components.status.bar.SshStatusSegment.runtime_last_close_reason',
-      'Closed: {{value0}}',
-      { value0: remoteControl.lastClose.reason }
-    )
-  }
-  if (remoteControl.state === 'reconnecting') {
-    return translate(
-      'auto.components.status.bar.SshStatusSegment.runtime_reconnect_attempt',
-      'Attempt {{value0}}',
-      { value0: String(remoteControl.reconnectAttempt + 1) }
-    )
-  }
-  // Why: pending-request / subscription counts are internal RPC plumbing (e.g. a
-  // live browser screencast shows as "N streams"). They're noise in a user-facing
-  // status row and make the line truncate — only surface actionable detail
-  // (errors, close reasons, reconnect attempts) above.
-  return undefined
-}
-
-export function runtimeStatusForOverall(state: RuntimeHostConnectionState): HostStatus {
-  switch (state) {
-    case 'connected':
-      return 'connected'
-    case 'checking':
-    case 'reconnecting':
-      return 'connecting'
-    case 'disconnected':
-      return 'disconnected'
-  }
-}
-
-export function isConnectedRuntimeHostState(state: RuntimeHostConnectionState): boolean {
-  return state === 'connected'
-}
-
-export async function connectRuntimeHostForNavigation(args: {
-  environmentId: string
-  refreshStatus: (environmentId: string, timeoutMs: number) => Promise<boolean>
-  fetchRepos: (environmentId: string) => Promise<{ id: string }[]>
-  fetchWorktrees: (repoId: string) => Promise<unknown>
-  fetchLineage: () => Promise<unknown>
-}): Promise<boolean> {
-  if (!(await args.refreshStatus(args.environmentId, 5_000))) {
-    return false
-  }
-  const repos = await args.fetchRepos(args.environmentId)
-  await Promise.all(repos.map((repo) => args.fetchWorktrees(repo.id)))
-  await args.fetchLineage()
-  return true
-}
+import { syncSshConfigTargetsPassively } from '../../lib/ssh-config-passive-sync'
+import { connectRuntimeHostAndReloadProjects } from './runtime-environment-explicit-connect'
+import {
+  overallDotColor,
+  overallStatus,
+  runtimeHostConnectionDetail,
+  sshStatusForOverall
+} from './remote-host-connection-status'
+import {
+  isConnectedRuntimeHostState,
+  runtimeHostConnectionStateForEntry,
+  runtimeStatusForOverall
+} from '@/runtime/runtime-host-connection-state'
 
 export function SshStatusSegment({
   compact,
@@ -173,46 +49,62 @@ export function SshStatusSegment({
   const settings = useAppStore((s) => s.settings)
   const runtimeEnvironments = useAppStore((s) => s.runtimeEnvironments)
   const runtimeStatusByEnvironmentId = useAppStore((s) => s.runtimeStatusByEnvironmentId)
-  const setRuntimeEnvironmentStatus = useAppStore((s) => s.setRuntimeEnvironmentStatus)
+  const readRuntimeHostStatusSnapshots = useAppStore((s) => s.readRuntimeHostStatusSnapshots)
   const hydrateRuntimeEnvironmentStatuses = useAppStore((s) => s.hydrateRuntimeEnvironmentStatuses)
-  const remoteWorkspaceSyncStatusByTargetId = useAppStore(
-    (s) => s.remoteWorkspaceSyncStatusByTargetId
-  )
   const setActiveView = useAppStore((s) => s.setActiveView)
   const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
   const recordFeatureInteraction = useAppStore((s) => s.recordFeatureInteraction)
 
   const hostLabelOverrides = useMemo(() => getHostDisplayLabelOverrides(settings), [settings])
+  const userManagedEnvironments = runtimeEnvironments.filter(isListedRemoteServer)
+  // Why the registry: a managed server and its SSH host are one machine, shown on its active route.
+  const visibleHostLabels = new Map(
+    pickerExecutionHosts(
+      buildExecutionHostRegistry({
+        repos: [],
+        settings,
+        hostSource: 'configured-only',
+        sshTargetLabels,
+        sshConnectionStates,
+        runtimeEnvironments: userManagedEnvironments,
+        runtimeStatusByEnvironmentId,
+        hostLabelOverrides
+      })
+    ).map((host) => [host.id, host.label])
+  )
   const targets = Array.from(sshTargetLabels.entries())
     // Why: runtime-owned (per-workspace-env) SSH targets are hidden — never list them
     // as a user-facing SSH host in the status bar.
-    .filter(([id]) => !isRuntimeOwnedSshTargetId(id))
+    .filter(
+      ([id]) => !isRuntimeOwnedSshTargetId(id) && visibleHostLabels.has(toSshExecutionHostId(id))
+    )
     .map(([id, label]) => {
       const state = sshConnectionStates.get(id)
       return {
         id,
-        label,
-        status: (state?.status ?? 'disconnected') as SshConnectionStatus,
-        syncStatus: remoteWorkspaceSyncStatusByTargetId[id]
+        label: visibleHostLabels.get(toSshExecutionHostId(id)) || label,
+        status: state?.status ?? ('disconnected' satisfies SshConnectionStatus)
       }
     })
-  const runtimeHosts = runtimeEnvironments
-    .filter(isUserManagedRuntimeEnvironment)
+  const runtimeHosts = userManagedEnvironments
+    .filter((environment) => visibleHostLabels.has(toRuntimeExecutionHostId(environment.id)))
     .map((environment) => {
       const statusEntry = runtimeStatusByEnvironmentId.get(environment.id)
-      const override = hostLabelOverrides.get(toRuntimeExecutionHostId(environment.id))
       return {
         id: environment.id,
-        label: override || environment.name || environment.id,
-        hasStatus: Boolean(statusEntry),
-        online: Boolean(statusEntry?.status),
+        label:
+          visibleHostLabels.get(toRuntimeExecutionHostId(environment.id)) ||
+          environment.name ||
+          environment.id,
+        snapshot: statusEntry?.snapshot,
+        status: statusEntry?.status ?? null,
         active: settings?.activeRuntimeEnvironmentId === environment.id,
-        remoteControl: statusEntry?.status?.remoteControl ?? null
+        remoteControl: statusEntry?.remoteControl ?? statusEntry?.status?.remoteControl ?? null
       }
     })
   const runtimeHostRows = runtimeHosts.map((host) => ({
     ...host,
-    state: runtimeHostConnectionState(host)
+    state: runtimeHostConnectionStateForEntry(runtimeStatusByEnvironmentId.get(host.id))
   }))
   // Available remote servers are online even when they are not the active runtime.
   // Keep host health separate from the advanced active-server selection.
@@ -226,24 +118,9 @@ export function SshStatusSegment({
   const disconnectedTargets = targets.filter((target) => target.status !== 'connected')
   const connectRuntimeHost = useCallback(
     async (environmentId: string): Promise<void> => {
-      const store = useAppStore.getState()
-      const reachable = await connectRuntimeHostForNavigation({
-        environmentId,
-        refreshStatus: connectRuntimeEnvironmentAndRecordStatus,
-        fetchRepos: store.fetchRuntimeEnvironmentRepos,
-        fetchWorktrees: store.fetchWorktrees,
-        fetchLineage: store.fetchWorktreeLineage
-      })
-      if (!reachable) {
-        toast.error(
-          translate(
-            'auto.components.status.bar.SshStatusSegment.runtime_connect_unavailable',
-            'Remote host is not reachable'
-          )
-        )
-        return
+      if (await connectRuntimeHostAndReloadProjects(environmentId)) {
+        recordFeatureInteraction('ssh')
       }
-      recordFeatureInteraction('ssh')
     },
     [recordFeatureInteraction]
   )
@@ -251,11 +128,7 @@ export function SshStatusSegment({
     async (environmentId: string): Promise<void> => {
       try {
         await window.api.runtimeEnvironments.disconnect({ selector: environmentId })
-        setRuntimeEnvironmentStatus(
-          environmentId,
-          { status: null, checkedAt: Date.now() },
-          { suppressDisconnectToast: true }
-        )
+        await readRuntimeHostStatusSnapshots()
         recordFeatureInteraction('ssh')
       } catch (err) {
         toast.error(
@@ -268,7 +141,7 @@ export function SshStatusSegment({
         )
       }
     },
-    [recordFeatureInteraction, setRuntimeEnvironmentStatus]
+    [recordFeatureInteraction, readRuntimeHostStatusSnapshots]
   )
 
   if (targets.length === 0 && runtimeHosts.length === 0) {
@@ -282,19 +155,12 @@ export function SshStatusSegment({
   const overall = overallStatus(statuses)
   const connectedHostCount = statuses.filter((status) => status === 'connected').length
   const anyConnecting = overall === 'connecting'
-  const syncProblem = targets.find(
-    (t) => t.syncStatus?.phase === 'conflict' || t.syncStatus?.phase === 'error'
-  )
-  const syncProblemLabel = syncProblem
-    ? syncProblem.syncStatus?.phase === 'conflict'
-      ? 'Workspace conflict'
-      : 'Workspace sync error'
-    : null
   return (
     <DropdownMenu
       onOpenChange={(open) => {
         if (open) {
           void hydrateRuntimeEnvironmentStatuses()
+          void syncSshConfigTargetsPassively()
           recordFeatureInteraction('ssh')
         }
       }}
@@ -311,13 +177,9 @@ export function SshStatusSegment({
           {iconOnly ? (
             <span className="inline-flex items-center gap-1">
               <span
-                className={`inline-block size-2 rounded-full ${
-                  syncProblem ? 'bg-destructive' : overallDotColor(overall, connectedHostCount)
-                }`}
+                className={`inline-block size-2 rounded-full ${overallDotColor(overall, connectedHostCount)}`}
               />
-              {syncProblem ? (
-                <AlertTriangle className="size-3 text-destructive" />
-              ) : anyConnecting ? (
+              {anyConnecting ? (
                 <Loader2 className="size-3 animate-spin text-muted-foreground" />
               ) : (
                 <MonitorSmartphone className="size-3 text-muted-foreground" />
@@ -325,9 +187,7 @@ export function SshStatusSegment({
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5">
-              {syncProblem ? (
-                <AlertTriangle className="size-3 text-destructive" />
-              ) : anyConnecting ? (
+              {anyConnecting ? (
                 <Loader2 className="size-3 animate-spin text-yellow-500" />
               ) : overall === 'connected' ? (
                 <Server className="size-3 text-emerald-500" />
@@ -338,16 +198,15 @@ export function SshStatusSegment({
               )}
               {!compact && (
                 <span className="text-[11px]">
-                  <span className={syncProblem ? 'text-destructive' : 'text-muted-foreground'}>
-                    {syncProblemLabel ??
-                      (anyConnecting ? 'Connecting…' : connectedHostCountLabel(connectedHostCount))}
+                  <span className="text-muted-foreground">
+                    {anyConnecting
+                      ? connectingHostsLabel()
+                      : connectedHostCountLabel(connectedHostCount)}
                   </span>
                 </span>
               )}
               <span
-                className={`inline-block size-1.5 rounded-full ${
-                  syncProblem ? 'bg-destructive' : overallDotColor(overall, connectedHostCount)
-                }`}
+                className={`inline-block size-1.5 rounded-full ${overallDotColor(overall, connectedHostCount)}`}
               />
             </span>
           )}
@@ -368,18 +227,13 @@ export function SshStatusSegment({
             label={host.label}
             state={host.state}
             detail={runtimeHostConnectionDetail(host.remoteControl)}
+            diagnostics={host.remoteControl}
             onConnect={() => connectRuntimeHost(host.id)}
             onDisconnect={() => disconnectRuntimeHost(host.id)}
           />
         ))}
         {connectedTargets.map((t) => (
-          <SshTargetStatusRow
-            key={t.id}
-            targetId={t.id}
-            label={t.label}
-            status={t.status}
-            syncStatus={t.syncStatus}
-          />
+          <SshTargetStatusRow key={t.id} targetId={t.id} label={t.label} status={t.status} />
         ))}
         {inactiveRuntimeHosts.map((host) => (
           <RuntimeHostStatusRow
@@ -387,18 +241,13 @@ export function SshStatusSegment({
             label={host.label}
             state={host.state}
             detail={runtimeHostConnectionDetail(host.remoteControl)}
+            diagnostics={host.remoteControl}
             onConnect={() => connectRuntimeHost(host.id)}
             onDisconnect={() => disconnectRuntimeHost(host.id)}
           />
         ))}
         {disconnectedTargets.map((t) => (
-          <SshTargetStatusRow
-            key={t.id}
-            targetId={t.id}
-            label={t.label}
-            status={t.status}
-            syncStatus={t.syncStatus}
-          />
+          <SshTargetStatusRow key={t.id} targetId={t.id} label={t.label} status={t.status} />
         ))}
         <DropdownMenuSeparator />
         <DropdownMenuItem

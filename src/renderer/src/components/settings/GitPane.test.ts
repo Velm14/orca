@@ -3,10 +3,16 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { getDefaultSettings } from '../../../../shared/constants'
+import type { GlobalSettings } from '../../../../shared/global-settings-types'
 import { translate } from '../../i18n/i18n'
 import { useAppStore } from '../../store'
 import { shouldOpenAutoRenameBranchAdvanced } from './AutoRenameBranchFromWorkSetting'
-import { GitPane, getGitPaneSearchEntries, shouldShowAutoRenameBranchSetting } from './GitPane'
+import {
+  GitPane,
+  SourceControlGroupOrderSetting,
+  getGitPaneSearchEntries,
+  shouldShowAutoRenameBranchSetting
+} from './GitPane'
 import { TooltipProvider } from '../ui/tooltip'
 import { matchesSettingsSearch } from './settings-search'
 import { SettingsSegmentedControl } from './SettingsFormControls'
@@ -33,6 +39,23 @@ function visit(node: unknown, cb: (node: ReactElementLike) => void): void {
     }
     visit(value, cb)
   }
+}
+
+function findSegmentedControl(node: unknown): ReactElementLike {
+  let found: ReactElementLike | null = null
+  const label = translate(
+    'auto.components.settings.GitPane.sourceControlGroupOrderTitle',
+    'Source Control Group Order'
+  )
+  visit(node, (entry) => {
+    if (entry.type === SettingsSegmentedControl && entry.props.ariaLabel === label) {
+      found = entry
+    }
+  })
+  if (!found) {
+    throw new Error('segmented control not found')
+  }
+  return found
 }
 
 function findCompareBaseSegmentedControl(node: unknown): ReactElementLike {
@@ -112,6 +135,52 @@ describe('GitPane', () => {
     expect(markup).toContain('git diff main...HEAD')
     expect(markup).toContain('local-only commits')
     expect(markup).not.toContain('Refresh Local Base Ref')
+  })
+
+  it('renders Source Control group order in Git settings', () => {
+    const markup = renderGitPane('group order')
+
+    expect(markup).toContain(
+      translate(
+        'auto.components.settings.GitPane.sourceControlGroupOrderTitle',
+        'Source Control Group Order'
+      )
+    )
+    expect(markup).toContain(
+      translate('auto.components.settings.GitPane.changesFirst', 'Changes first')
+    )
+    expect(markup).toContain(
+      translate('auto.components.settings.GitPane.stagedFirst', 'Staged first')
+    )
+    expect(markup).toContain(
+      translate('auto.components.settings.GitPane.untrackedFirst', 'Untracked first')
+    )
+  })
+
+  it('updates Source Control group order only when the selected option changes', () => {
+    const updateSettings = vi.fn()
+    const element = SourceControlGroupOrderSetting({
+      settings: {
+        ...getDefaultSettings(os.homedir()),
+        sourceControlGroupOrder: 'changes-first'
+      },
+      updateSettings
+    })
+
+    const control = findSegmentedControl(element)
+    const onChange = control.props.onChange as (value: string) => void
+
+    onChange('staged-first')
+    expect(updateSettings).toHaveBeenCalledWith({ sourceControlGroupOrder: 'staged-first' })
+
+    updateSettings.mockClear()
+    onChange('changes-first')
+    expect(updateSettings).not.toHaveBeenCalled()
+  })
+
+  it('includes Source Control group order search metadata', () => {
+    expect(matchesSettingsSearch('staged', getGitPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('group order', getGitPaneSearchEntries())).toBe(true)
   })
 
   it('renders the default compare base setting in Git settings', () => {
@@ -196,5 +265,76 @@ describe('GitPane', () => {
     )
     ;(branchUpstreamControl.props.onChange as (value: string) => void)('repository-default')
     expect(updateSettings).toHaveBeenCalledWith({ sourceControlCompareAgainstUpstream: false })
+  })
+})
+
+function renderBranchPrefixGitPane(
+  settings: GlobalSettings,
+  displayedGitUsername = 'jdoe'
+): string {
+  return renderToStaticMarkup(
+    React.createElement(
+      TooltipProvider,
+      null,
+      React.createElement(GitPane, {
+        settings,
+        updateSettings: () => {},
+        writeSourceControlAiSettings: async () => {},
+        displayedGitUsername,
+        settingsSearchQuery: ''
+      })
+    )
+  )
+}
+
+function customPrefixSettings(branchPrefixCustom: string): GlobalSettings {
+  return {
+    ...getDefaultSettings('/home/test'),
+    branchPrefix: 'custom',
+    branchPrefixCustom
+  }
+}
+
+function gitUsernamePrefixSettings(): GlobalSettings {
+  return {
+    ...getDefaultSettings('/home/test'),
+    branchPrefix: 'git-username',
+    branchPrefixCustom: ''
+  }
+}
+
+describe('GitPane branch prefix feedback', () => {
+  it('previews the resulting branch name and drops a redundant trailing slash', () => {
+    const html = renderBranchPrefixGitPane(customPrefixSettings('team/'))
+    expect(html).toContain('team/feature')
+    expect(html).not.toContain('team//feature')
+  })
+
+  it('warns when the custom prefix contains invalid characters', () => {
+    const html = renderBranchPrefixGitPane(customPrefixSettings('team x'))
+    expect(html).toContain('Prefix cannot contain spaces')
+  })
+
+  it('shows neither preview nor warning when no custom prefix is set', () => {
+    const html = renderBranchPrefixGitPane(customPrefixSettings(''))
+    expect(html).not.toContain('/feature')
+    expect(html).not.toContain('Prefix cannot contain spaces')
+    expect(html).not.toContain('No prefix will be applied')
+  })
+
+  it('explains when a custom prefix normalizes away to empty', () => {
+    const html = renderBranchPrefixGitPane(customPrefixSettings('/'))
+    expect(html).toContain('No prefix will be applied')
+    expect(html).not.toContain('/feature')
+  })
+
+  it('warns in git-username mode when the displayed username is invalid', () => {
+    const html = renderBranchPrefixGitPane(gitUsernamePrefixSettings(), 'team x')
+    expect(html).toContain('Prefix cannot contain spaces')
+  })
+
+  it('previews in git-username mode when the displayed username is valid', () => {
+    const html = renderBranchPrefixGitPane(gitUsernamePrefixSettings(), 'jdoe/')
+    expect(html).toContain('jdoe/feature')
   })
 })

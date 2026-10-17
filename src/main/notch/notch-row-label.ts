@@ -1,7 +1,7 @@
 // Turns a session's workspace into the two lines a notch row shows.
 // Pure by design: main does the synchronous store lookup and passes the result in, so this
 // never reaches for `runtime.getWorktreePs()` on a path that must stay non-blocking.
-import type { Worktree } from '../../shared/types'
+import type { Worktree } from '../../shared/worktree/types'
 
 export type NotchRowLabel = {
   /** Workspace name. */

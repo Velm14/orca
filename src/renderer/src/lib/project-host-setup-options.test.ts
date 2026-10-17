@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { getExecutionHostLabel, type ExecutionHostId } from '../../../shared/execution-host'
-import type {
-  ExecutionHostHealth,
-  ExecutionHostRegistryEntry
+import {
+  buildExecutionHostRegistry,
+  type ExecutionHostHealth,
+  type ExecutionHostRegistryEntry
 } from '../../../shared/execution-host-registry'
 import {
   PROJECT_HOST_SETUP_RUNTIME_CAPABILITY,
   WORKSPACE_RUN_CONTEXT_RUNTIME_CAPABILITY
 } from '../../../shared/protocol-version'
-import type { ProjectHostSetup, Repo } from '../../../shared/types'
+import type { ProjectHostSetup } from '../../../shared/project-types'
+import type { Repo } from '../../../shared/repo-types'
 import { buildProjectHostSetupOptions } from './project-host-setup-options'
 
 const FULL_HOST_MODEL_RUNTIME_CAPABILITIES = [
@@ -269,9 +271,28 @@ describe('buildProjectHostSetupOptions', () => {
         kind: 'needs-setup',
         label: 'Builder',
         detail: 'Project location not set',
-        isAvailable: true
+        isAvailable: true,
+        canSetLocation: true
       })
     ])
+  })
+
+  // A `repo:<id>` project has no cross-host identity, so linking it on another host
+  // always fails in main — the row keeps its status line instead of a dead button.
+  it('cannot set a location for a host-local project', () => {
+    const options = buildProjectHostSetupOptions({
+      projectId: 'repo:local-repo',
+      eligibleRepos: [repo('local-repo')],
+      hosts: [host('local'), host('ssh:builder', { label: 'Builder' })],
+      projectHostSetups: [setup('local', 'repo:local-repo', 'local', 'local-repo')]
+    })
+
+    expect(options.at(-1)).toMatchObject({
+      kind: 'needs-setup',
+      detail: 'Project location not set',
+      isAvailable: true,
+      canSetLocation: false
+    })
   })
 
   it.each([
@@ -406,7 +427,8 @@ describe('buildProjectHostSetupOptions', () => {
         kind: 'needs-setup',
         label: 'GPU VM',
         detail: 'Project setup is in progress',
-        isAvailable: true
+        isAvailable: true,
+        canSetLocation: false
       })
     ])
   })
@@ -436,7 +458,10 @@ describe('buildProjectHostSetupOptions', () => {
           })
         ]
       }).at(-1)
-    ).toMatchObject({ detail: 'Project tracked on this host but not set up' })
+    ).toMatchObject({
+      detail: 'Project tracked on this host but not set up',
+      canSetLocation: true
+    })
 
     expect(
       buildProjectHostSetupOptions({
@@ -456,7 +481,7 @@ describe('buildProjectHostSetupOptions', () => {
           })
         ]
       }).at(-1)
-    ).toMatchObject({ detail: 'Project setup needs attention' })
+    ).toMatchObject({ detail: 'Project setup needs attention', canSetLocation: true })
 
     expect(
       buildProjectHostSetupOptions({
@@ -476,7 +501,10 @@ describe('buildProjectHostSetupOptions', () => {
           })
         ]
       }).at(-1)
-    ).toMatchObject({ detail: 'Project is unsupported on this host' })
+    ).toMatchObject({
+      detail: 'Project is unsupported on this host',
+      canSetLocation: false
+    })
   })
 
   it('marks incompatible runtime hosts as visible but unavailable', () => {
@@ -558,5 +586,93 @@ describe('buildProjectHostSetupOptions', () => {
       detail: 'Checking host capabilities',
       isAvailable: false
     })
+  })
+
+  it('offers an SSH host with a managed server once, routed to the server', () => {
+    const options = buildProjectHostSetupOptions({
+      projectId: 'project-1',
+      eligibleRepos: [repo('local-repo')],
+      hosts: buildExecutionHostRegistry({
+        repos: [],
+        settings: null,
+        hostSource: 'configured-only',
+        sshTargetLabels: new Map([['omarchy-target', 'Omarchy']]),
+        runtimeEnvironments: [
+          {
+            id: 'omarchy-server',
+            name: 'Omarchy',
+            orcadDeployment: { sshTargetId: 'omarchy-target' }
+          }
+        ]
+      }),
+      projectHostSetups: [setup('local', 'project-1', 'local', 'local-repo')]
+    })
+
+    expect(options.filter((option) => option.label === 'Omarchy')).toEqual([
+      expect.objectContaining({ kind: 'needs-setup', hostId: 'runtime:omarchy-server' })
+    ])
+  })
+
+  function managedOpenclawHosts(): ExecutionHostRegistryEntry[] {
+    return buildExecutionHostRegistry({
+      repos: [],
+      settings: null,
+      hostSource: 'configured-only',
+      sshTargetLabels: new Map([['openclaw-target', 'openclaw']]),
+      runtimeEnvironments: [
+        {
+          id: 'openclaw-server',
+          name: 'openclaw',
+          orcadDeployment: { sshTargetId: 'openclaw-target' }
+        }
+      ]
+    })
+  }
+
+  it('shows one row when an SSH host and its managed server report the same checkout', () => {
+    const checkout = { path: '/home/neil/projects/orca' }
+    const options = buildProjectHostSetupOptions({
+      projectId: 'project-1',
+      eligibleRepos: [repo('local-repo'), repo('ssh-repo'), repo('server-repo')],
+      hosts: [host('local'), ...managedOpenclawHosts()],
+      projectHostSetups: [
+        setup('local', 'project-1', 'local', 'local-repo'),
+        // The SSH repo predates the managed server, so it comes first in store order.
+        setup('ssh', 'project-1', 'ssh:openclaw-target', 'ssh-repo', checkout),
+        setup('server', 'project-1', 'runtime:openclaw-server', 'server-repo', checkout)
+      ]
+    })
+
+    expect(options.filter((option) => option.label === 'openclaw')).toEqual([
+      expect.objectContaining({
+        kind: 'ready',
+        id: 'server',
+        hostId: 'runtime:openclaw-server',
+        aliasSetups: [{ id: 'ssh', hostId: 'ssh:openclaw-target' }]
+      })
+    ])
+  })
+
+  it('keeps distinct checkouts on an SSH host and its managed server as separate rows', () => {
+    const options = buildProjectHostSetupOptions({
+      projectId: 'project-1',
+      eligibleRepos: [repo('ssh-repo'), repo('server-repo')],
+      hosts: managedOpenclawHosts(),
+      projectHostSetups: [
+        setup('ssh', 'project-1', 'ssh:openclaw-target', 'ssh-repo', { path: '/home/neil/a' }),
+        setup('server', 'project-1', 'runtime:openclaw-server', 'server-repo', {
+          path: '/home/neil/b'
+        })
+      ]
+    })
+
+    expect(
+      options
+        .filter((option) => option.kind === 'ready')
+        .map((option) => [option.id, option.hostId])
+    ).toEqual([
+      ['ssh', 'ssh:openclaw-target'],
+      ['server', 'runtime:openclaw-server']
+    ])
   })
 })

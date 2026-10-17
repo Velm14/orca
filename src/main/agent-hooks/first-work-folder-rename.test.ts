@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GlobalSettings, Repo } from '../../shared/types'
+import type { GlobalSettings } from '../../shared/global-settings-types'
+import type { Repo } from '../../shared/repo-types'
 import {
   renameWorktreeFolderOnFirstWork,
   type FirstWorkFolderRenameDeps
@@ -48,6 +49,11 @@ describe('renameWorktreeFolderOnFirstWork', () => {
       'repo1',
       OLD_ID,
       'repo1::/ws/worktree-creation-spinner'
+    )
+    // Main re-keys its stored layout before the window hears of the rename, so the window's
+    // re-key and save only mirror it (worktree-identity-rename-main-agreement.test.ts).
+    expect(vi.mocked(deps.migrateWorktreeIdentity).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(deps.notifyWorktreeRenamed).mock.invocationCallOrder[0]!
     )
   })
 

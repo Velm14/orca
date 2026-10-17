@@ -2,11 +2,13 @@ import { useMemo, useState } from 'react'
 import {
   getExecutionHostLabel,
   parseExecutionHostId,
+  toRuntimeExecutionHostId,
   type ExecutionHostId
 } from '../../../../shared/execution-host'
 import { buildExecutionHostRegistry } from '../../../../shared/execution-host-registry'
 import { getHostDisplayLabelOverrides } from '../../../../shared/host-setting-overrides'
-import type { ProjectHostSetup, Repo } from '../../../../shared/types'
+import type { ProjectHostSetup } from '../../../../shared/project-types'
+import type { Repo } from '../../../../shared/repo-types'
 import { useAppStore } from '../../store'
 import { getProjectHostSetupProjectionFromState } from '../../store/selectors'
 import { cn } from '../../lib/utils'
@@ -24,10 +26,16 @@ import {
   selectRuntimeAwareSshStatus,
   selectRuntimeAwareSshTargetLabel
 } from '@/store/slices/runtime-environment-ssh'
+import {
+  isConnectedRuntimeHostState,
+  runtimeHostConnectionStateForEntry
+} from '@/runtime/runtime-host-connection-state'
 
 type RepositoryHostSetupsSectionProps = {
   repo: Repo
   selectedProjectSetupId?: string
+  settingsSelectionKey?: string
+  settingsEntryRepoIds?: ReadonlySet<string>
   forceVisible: boolean
   searchQuery: string
   searchEntries: SettingsSearchEntry[]
@@ -54,6 +62,8 @@ function setupsByOwnedExecutionHost(
 export function RepositoryHostSetupsSection({
   repo,
   selectedProjectSetupId,
+  settingsSelectionKey,
+  settingsEntryRepoIds,
   forceVisible,
   searchQuery,
   searchEntries
@@ -110,36 +120,43 @@ export function RepositoryHostSetupsSection({
         setup.repoId === repo.id &&
         setup.projectId === repoProjectHostSetup?.projectId
     ) ?? repoProjectHostSetup
-  const projectHostSetups = selectedProjectHostSetup
-    ? setupsByOwnedExecutionHost(
-        projectHostSetupProjection.setups.filter(
-          (setup) => setup.projectId === selectedProjectHostSetup.projectId
-        ),
-        selectedProjectHostSetup.id
+  const allProjectHostSetups = selectedProjectHostSetup
+    ? projectHostSetupProjection.setups.filter(
+        (setup) => setup.projectId === selectedProjectHostSetup.projectId
       )
     : []
+  // Why: a sibling entry's setups can't be opened from this pane; not-set-up
+  // placeholders belong to the project, not a checkout, so every entry keeps them.
+  const projectHostSetups = setupsByOwnedExecutionHost(
+    allProjectHostSetups.filter(
+      (setup) =>
+        !settingsEntryRepoIds || !setup.repoId.trim() || settingsEntryRepoIds.has(setup.repoId)
+    ),
+    selectedProjectHostSetup?.id ?? ''
+  )
   const openableProjectHostSetups = projectHostSetups.filter((setup) => setup.repoId.trim())
   const switchableProjectHostSetups = setupsByOwnedExecutionHost(
     openableProjectHostSetups,
     selectedProjectHostSetup?.id ?? ''
   )
   const setupHostOptions = buildSetupHostOptions({
-    projectHostSetups,
+    projectHostSetups: allProjectHostSetups,
     hostOptions
   })
   const hostOptionById = new Map(hostOptions.map((option) => [option.id, option]))
   const [deletingSetupId, setDeletingSetupId] = useState<string | null>(null)
-  const projectId = selectedProjectHostSetup?.projectId
+  // Why: split clone entries share a projectId, so each keeps its own selection.
+  const selectionKey = settingsSelectionKey ?? selectedProjectHostSetup?.projectId
   // Why: the single project pane switches host in place — set the ephemeral
-  // per-project selection instead of navigating to a separate repo section.
+  // per-entry selection instead of navigating to a separate repo section.
   const selectHost = (hostId: ExecutionHostId) => {
-    if (projectId) {
-      setSettingsProjectHostSelection(projectId, hostId)
+    if (selectionKey) {
+      setSettingsProjectHostSelection(selectionKey, hostId)
     }
   }
   const selectSetup = (setup: ProjectHostSetup) => {
-    if (projectId) {
-      setSettingsProjectHostSelection(projectId, setup.hostId, setup.id)
+    if (selectionKey) {
+      setSettingsProjectHostSelection(selectionKey, setup.hostId, setup.id)
     }
   }
   if (
@@ -215,20 +232,29 @@ export function RepositoryHostSetupsSection({
           const runtimeOwnerEnvironmentId =
             setup.runtimeOwnerEnvironmentId?.trim() ||
             (transportHost?.kind === 'runtime' ? transportHost.environmentId : null)
+          // Why: share one host-health derivation with the status bar so a degraded
+          // owner can never read "Ready" here and "Connected"/"Disconnected" there.
+          const runtimeOwnerStatusEntry = runtimeOwnerEnvironmentId
+            ? runtimeStatusByEnvironmentId.get(runtimeOwnerEnvironmentId)
+            : undefined
+          const runtimeOwnerState = runtimeOwnerEnvironmentId
+            ? runtimeHostConnectionStateForEntry(runtimeOwnerStatusEntry)
+            : null
           const runtimeOwnerReachable =
-            !runtimeOwnerEnvironmentId ||
-            Boolean(runtimeStatusByEnvironmentId.get(runtimeOwnerEnvironmentId)?.status)
+            runtimeOwnerState === null || isConnectedRuntimeHostState(runtimeOwnerState)
+          const runtimeOwnerWorkspaceWindowClosed = runtimeOwnerState === 'workspace-window-closed'
+          const runtimeOwnerRuntimeUnavailable = runtimeOwnerState === 'runtime-unavailable'
+          const runtimeOwnerHostId = runtimeOwnerEnvironmentId
+            ? toRuntimeExecutionHostId(runtimeOwnerEnvironmentId)
+            : null
+          const runtimeOwnerHostLabel = runtimeOwnerHostId
+            ? (hostOptionById.get(runtimeOwnerHostId)?.label ??
+              getExecutionHostLabel(runtimeOwnerHostId))
+            : ''
           const nestedSshStatus =
             runtimeOwnerEnvironmentId && executionHost?.kind === 'ssh'
               ? selectRuntimeAwareSshStatus(
-                  {
-                    sshConnectionStates,
-                    sshTargetLabels,
-                    removedSshTargetLabels,
-                    sshTargetsHydrated,
-                    sshStateByEnvironment,
-                    runtimeStatusByEnvironmentId
-                  },
+                  { sshConnectionStates, sshStateByEnvironment, runtimeStatusByEnvironmentId },
                   runtimeOwnerEnvironmentId,
                   executionHost.targetId
                 )
@@ -236,20 +262,29 @@ export function RepositoryHostSetupsSection({
           const setupReady =
             setup.setupState === 'ready' &&
             runtimeOwnerReachable &&
+            !runtimeOwnerWorkspaceWindowClosed &&
+            !runtimeOwnerRuntimeUnavailable &&
             (nestedSshStatus === undefined || nestedSshStatus === 'connected')
           const setupStateLabel = !runtimeOwnerReachable
             ? translate(
                 'auto.components.settings.RepositoryPane.hostStateDisconnected',
                 'Disconnected'
               )
-            : nestedSshStatus === null
-              ? translate('auto.components.settings.RepositoryPane.hostStateUnknown', 'Unknown')
-              : nestedSshStatus !== undefined && nestedSshStatus !== 'connected'
-                ? translate(
-                    'auto.components.settings.RepositoryPane.hostStateDisconnected',
-                    'Disconnected'
-                  )
-                : getSetupStateLabel(setup.setupState)
+            : runtimeOwnerWorkspaceWindowClosed
+              ? translate(
+                  'auto.components.settings.RepositoryPane.hostStateWorkspaceWindowClosed',
+                  'Workspace window closed'
+                )
+              : runtimeOwnerRuntimeUnavailable
+                ? translate('auto.components.settings.RepositoryPane.hostStateUnknown', 'Unknown')
+                : nestedSshStatus === null
+                  ? translate('auto.components.settings.RepositoryPane.hostStateUnknown', 'Unknown')
+                  : nestedSshStatus !== undefined && nestedSshStatus !== 'connected'
+                    ? translate(
+                        'auto.components.settings.RepositoryPane.hostStateDisconnected',
+                        'Disconnected'
+                      )
+                    : getSetupStateLabel(setup.setupState)
           const setupHostLabel =
             runtimeOwnerEnvironmentId && executionHost?.kind === 'ssh'
               ? translate(
@@ -299,6 +334,17 @@ export function RepositoryHostSetupsSection({
                       'Path pending'
                     )}
                 </p>
+                {runtimeOwnerWorkspaceWindowClosed ? (
+                  // Why: no runtime RPC can open a remote desktop window, so the only
+                  // honest affordance is telling the user what to do on that host.
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    {translate(
+                      'auto.components.settings.RepositoryPane.hostWorkspaceWindowClosedHelp',
+                      'The server is reachable but its Orca window is closed. Open Orca on {{value0}} to use this setup.',
+                      { value0: runtimeOwnerHostLabel }
+                    )}
+                  </p>
+                ) : null}
               </div>
               {isCurrentSetup ? (
                 <SettingsBadge>

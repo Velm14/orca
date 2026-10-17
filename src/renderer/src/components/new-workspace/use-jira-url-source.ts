@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/store'
+import { getJiraAccountLabel } from '@/lib/jira-account-label'
 import { assertRuntimeEnvironmentCapability } from '@/runtime/runtime-rpc-client'
 import {
   getMatchingJiraSites,
@@ -15,7 +16,7 @@ import {
 } from '../../../../shared/task-source-context'
 import { parseExecutionHostId } from '../../../../shared/execution-host'
 import { WORKTREE_LINKED_WORK_ITEM_CONTEXT_RUNTIME_CAPABILITY } from '../../../../shared/protocol-version'
-import type { JiraIssue, JiraSite } from '../../../../shared/types'
+import type { JiraIssue, JiraSite } from '../../../../shared/jira-types'
 import { canReuseLoadedJiraStatus, type JiraSourceConnection } from './use-jira-source-connection'
 
 const LOOKUP_DEBOUNCE_MS = 200
@@ -54,7 +55,7 @@ function getPreferredSite(
   matches: JiraSite[],
   selectedAccount: AccountSelection | null,
   requestKey: string,
-  selectedSiteId: string | 'all' | null | undefined,
+  selectedSiteId: (string & {}) | 'all' | null | undefined,
   activeSiteId: string | null | undefined
 ): JiraSite | null {
   const explicitId = selectedAccount?.requestKey === requestKey ? selectedAccount.siteId : null
@@ -88,7 +89,7 @@ export function bindJiraIssueSourceContext(
       siteUrl: site.siteUrl,
       projectKey: issue.project.key
     },
-    accountLabel: site.email || site.displayName
+    accountLabel: getJiraAccountLabel(site)
   })
 }
 

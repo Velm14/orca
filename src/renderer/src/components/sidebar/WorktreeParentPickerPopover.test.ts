@@ -1,6 +1,9 @@
+// @vitest-environment happy-dom
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Worktree } from '../../../../shared/types'
+import type { Worktree } from '../../../../shared/worktree/types'
 import {
+  getWorktreeParentPickerFocusRestoreTarget,
   handleWorktreeParentPickerKeyDown,
   selectWorktreeParent
 } from './WorktreeParentPickerPopover'
@@ -173,6 +176,36 @@ describe('clampWorktreeParentPickerIndex', () => {
   })
 })
 
+describe('getWorktreeParentPickerFocusRestoreTarget', () => {
+  function makeSidebarRow(): { listbox: HTMLElement; row: HTMLElement } {
+    const listbox = document.createElement('div')
+    listbox.tabIndex = 0
+    listbox.setAttribute('role', 'listbox')
+    const row = document.createElement('div')
+    row.setAttribute('role', 'option')
+    listbox.appendChild(row)
+    return { listbox, row }
+  }
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('restores focus to the focusable container of the anchored row', () => {
+    const { listbox, row } = makeSidebarRow()
+    document.body.appendChild(listbox)
+
+    expect(getWorktreeParentPickerFocusRestoreTarget(row)).toBe(listbox)
+  })
+
+  it('skips a row whose sidebar was already unmounted or never anchored', () => {
+    const { row } = makeSidebarRow()
+
+    expect(getWorktreeParentPickerFocusRestoreTarget(row)).toBeNull()
+    expect(getWorktreeParentPickerFocusRestoreTarget(null)).toBeNull()
+  })
+})
+
 describe('parent picker keyboard input', () => {
   it.each([
     { isComposing: true, keyCode: 13 },
@@ -201,4 +234,23 @@ describe('parent picker keyboard input', () => {
     expect(preventDefault).not.toHaveBeenCalled()
     expect(stopPropagation).not.toHaveBeenCalled()
   })
+})
+
+const { rejectAppStoreAccess } = vi.hoisted(() => ({
+  rejectAppStoreAccess: vi.fn(() => {
+    throw new Error('Pure helper tests must not access the app store')
+  })
+}))
+
+vi.mock('@/store', () => ({
+  useAppStore: Object.assign(rejectAppStoreAccess, {
+    getState: rejectAppStoreAccess,
+    getInitialState: rejectAppStoreAccess,
+    setState: rejectAppStoreAccess,
+    subscribe: rejectAppStoreAccess
+  })
+}))
+
+afterEach(() => {
+  expect(rejectAppStoreAccess).not.toHaveBeenCalled()
 })

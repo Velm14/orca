@@ -1,7 +1,8 @@
+import { settledWriteStub } from '../providers/settled-pty-write-stub'
 import { describe, expect, it, vi } from 'vitest'
 import { OrcaRuntimeService } from './orca-runtime'
 import { getDefaultWorkspaceSession } from '../../shared/constants'
-import type { WorkspaceSessionState } from '../../shared/types'
+import type { WorkspaceSessionState } from '../../shared/workspace-session-state-types'
 
 // STA repro (silent-send incident): `orca terminal send` to a leaf whose ptyId
 // no provider in this process owns was a silent no-op reported as success —
@@ -51,6 +52,7 @@ async function makeRuntimeWithLeafHandle(options: {
   runtime.setPtyController({
     spawn: vi.fn(async () => ({ id: 'never' })),
     write,
+    writeWithSettlement: settledWriteStub(write),
     kill: () => true,
     getForegroundProcess: async () => null,
     listProcesses: vi.fn(async () => []),
@@ -94,9 +96,9 @@ describe('sendTerminal absence gate for leaf-branch writes', () => {
     const probe = vi.fn(async () => false)
     const { runtime, handle, write } = await makeRuntimeWithLeafHandle({ probePtyLiveness: probe })
 
-    await expect(runtime.sendTerminal(handle, { text: 'ping' })).rejects.toThrow(
-      'terminal_not_writable'
-    )
+    await expect(
+      runtime.sendTerminal(handle, { text: 'ping' }, { inputKind: 'driving' })
+    ).rejects.toThrow('terminal_not_writable')
 
     expect(probe).toHaveBeenCalledWith(STALE_PTY_ID)
     expect(write).not.toHaveBeenCalled()
@@ -106,9 +108,9 @@ describe('sendTerminal absence gate for leaf-branch writes', () => {
     const probe = vi.fn(async () => false)
     const { runtime, handle, write } = await makeRuntimeWithLeafHandle({ probePtyLiveness: probe })
 
-    await expect(runtime.sendTerminalAgentPrompt(handle, 'do the thing')).rejects.toThrow(
-      'terminal_not_writable'
-    )
+    await expect(
+      runtime.sendTerminalAgentPrompt(handle, 'do the thing', { inputKind: 'driving' })
+    ).rejects.toThrow('terminal_not_writable')
 
     expect(write).not.toHaveBeenCalled()
   })
@@ -118,12 +120,14 @@ describe('sendTerminal absence gate for leaf-branch writes', () => {
       probePtyLiveness: async () => null
     })
 
-    await expect(runtime.sendTerminal(handle, { text: 'ping' })).resolves.toMatchObject({
+    await expect(
+      runtime.sendTerminal(handle, { text: 'ping' }, { inputKind: 'driving' })
+    ).resolves.toMatchObject({
       handle,
       accepted: true
     })
 
-    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping')
+    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping', 'driving')
   })
 
   it('treats a throwing probe as unknown and proceeds', async () => {
@@ -133,11 +137,13 @@ describe('sendTerminal absence gate for leaf-branch writes', () => {
       }
     })
 
-    await expect(runtime.sendTerminal(handle, { text: 'ping' })).resolves.toMatchObject({
+    await expect(
+      runtime.sendTerminal(handle, { text: 'ping' }, { inputKind: 'driving' })
+    ).resolves.toMatchObject({
       accepted: true
     })
 
-    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping')
+    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping', 'driving')
   })
 
   it('proceeds when the probe answers live (restored session before its pane remounts)', async () => {
@@ -145,21 +151,25 @@ describe('sendTerminal absence gate for leaf-branch writes', () => {
       probePtyLiveness: async () => true
     })
 
-    await expect(runtime.sendTerminal(handle, { text: 'ping' })).resolves.toMatchObject({
+    await expect(
+      runtime.sendTerminal(handle, { text: 'ping' }, { inputKind: 'driving' })
+    ).resolves.toMatchObject({
       accepted: true
     })
 
-    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping')
+    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping', 'driving')
   })
 
   it('proceeds unchanged when the controller exposes no probe', async () => {
     const { runtime, handle, write } = await makeRuntimeWithLeafHandle({})
 
-    await expect(runtime.sendTerminal(handle, { text: 'ping' })).resolves.toMatchObject({
+    await expect(
+      runtime.sendTerminal(handle, { text: 'ping' }, { inputKind: 'driving' })
+    ).resolves.toMatchObject({
       accepted: true
     })
 
-    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping')
+    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping', 'driving')
   })
 
   it('never probes when the provider synchronously knows the id (live pty)', async () => {
@@ -169,24 +179,26 @@ describe('sendTerminal absence gate for leaf-branch writes', () => {
       hasPty: (ptyId) => ptyId === STALE_PTY_ID
     })
 
-    await expect(runtime.sendTerminal(handle, { text: 'ping' })).resolves.toMatchObject({
+    await expect(
+      runtime.sendTerminal(handle, { text: 'ping' }, { inputKind: 'driving' })
+    ).resolves.toMatchObject({
       accepted: true
     })
 
     expect(probe).not.toHaveBeenCalled()
-    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping')
+    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'ping', 'driving')
   })
 
   it('reuses a proven-absent verdict across repeated sends instead of re-probing', async () => {
     const probe = vi.fn(async () => false)
     const { runtime, handle } = await makeRuntimeWithLeafHandle({ probePtyLiveness: probe })
 
-    await expect(runtime.sendTerminal(handle, { text: 'a' })).rejects.toThrow(
-      'terminal_not_writable'
-    )
-    await expect(runtime.sendTerminal(handle, { text: 'b' })).rejects.toThrow(
-      'terminal_not_writable'
-    )
+    await expect(
+      runtime.sendTerminal(handle, { text: 'a' }, { inputKind: 'driving' })
+    ).rejects.toThrow('terminal_not_writable')
+    await expect(
+      runtime.sendTerminal(handle, { text: 'b' }, { inputKind: 'driving' })
+    ).rejects.toThrow('terminal_not_writable')
 
     expect(probe).toHaveBeenCalledTimes(1)
   })
@@ -199,17 +211,19 @@ describe('sendTerminal absence gate for leaf-branch writes', () => {
       hasPty: (ptyId) => livePtyIds.has(ptyId)
     })
 
-    await expect(runtime.sendTerminal(handle, { text: 'a' })).rejects.toThrow(
-      'terminal_not_writable'
-    )
+    await expect(
+      runtime.sendTerminal(handle, { text: 'a' }, { inputKind: 'driving' })
+    ).rejects.toThrow('terminal_not_writable')
     // Same id recreated by a fresh spawn: provider knowledge must beat the verdict.
     livePtyIds.add(STALE_PTY_ID)
 
-    await expect(runtime.sendTerminal(handle, { text: 'b' })).resolves.toMatchObject({
+    await expect(
+      runtime.sendTerminal(handle, { text: 'b' }, { inputKind: 'driving' })
+    ).resolves.toMatchObject({
       accepted: true
     })
     expect(probe).toHaveBeenCalledTimes(1)
-    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'b')
+    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, 'b', 'driving')
   })
 })
 
@@ -229,21 +243,164 @@ type StoredMessageRow = {
   created_at: string
   delivered_at: string | null
   sender_pane_key: null
+  pointer_enter_pending: number
+  pointer_pty_id: string | null
+  pointer_process_incarnation: string | null
 }
 
 function makeOrchestrationDbStub(toHandle: () => string) {
   const rows: StoredMessageRow[] = []
-  const markAsDelivered = vi.fn((ids: string[]) => {
+  const runMailbox = 'run:run_test'
+  const clearMailboxPointerEnter = (ids: ReadonlySet<string>) => {
     for (const row of rows) {
-      if (ids.includes(row.id)) {
+      if (ids.has(row.id)) {
+        row.pointer_enter_pending = 0
+        row.pointer_pty_id = null
+        row.pointer_process_incarnation = null
+      }
+    }
+  }
+  const markAsDelivered = vi.fn((ids: string[]) => {
+    const deliveredIds = new Set(ids)
+    for (const row of rows) {
+      if (deliveredIds.has(row.id)) {
         row.delivered_at = 'now'
       }
     }
+    clearMailboxPointerEnter(deliveredIds)
+  })
+  const markAsUndelivered = vi.fn((ids: string[]) => {
+    const releasedIds = new Set(ids)
+    for (const row of rows) {
+      if (releasedIds.has(row.id) && row.read === 0) {
+        row.delivered_at = null
+      }
+    }
+    clearMailboxPointerEnter(releasedIds)
+  })
+  const stageMailboxPointerEnter = vi.fn(
+    (ids: string[], target: { ptyId: string; processIncarnation: string }) => {
+      const stagedIds = new Set(ids)
+      let changed = 0
+      for (const row of rows) {
+        if (stagedIds.has(row.id) && row.read === 0) {
+          row.pointer_enter_pending = 1
+          row.pointer_pty_id = target.ptyId
+          row.pointer_process_incarnation = target.processIncarnation
+          changed += 1
+        }
+      }
+      return changed === ids.length
+    }
+  )
+  const matchesReservation = (
+    row: StoredMessageRow,
+    target: { ptyId: string; processIncarnation: string }
+  ): boolean =>
+    row.pointer_pty_id === target.ptyId &&
+    row.pointer_process_incarnation === target.processIncarnation
+  const advanceMailboxPointerPhase = (
+    ids: string[],
+    target: { ptyId: string; processIncarnation: string },
+    from: number,
+    to: number
+  ): boolean => {
+    const selected = new Set(ids)
+    let changed = 0
+    for (const row of rows) {
+      if (
+        selected.has(row.id) &&
+        row.read === 0 &&
+        row.pointer_enter_pending === from &&
+        matchesReservation(row, target)
+      ) {
+        row.pointer_enter_pending = to
+        changed += 1
+      }
+    }
+    return changed === ids.length
+  }
+  const markMailboxPointerWriteAttempted = vi.fn(
+    (ids: string[], target: { ptyId: string; processIncarnation: string }) =>
+      advanceMailboxPointerPhase(ids, target, 1, 2)
+  )
+  const markMailboxPointerEnterAttempted = vi.fn(
+    (ids: string[], target: { ptyId: string; processIncarnation: string }) =>
+      advanceMailboxPointerPhase(ids, target, 2, 3)
+  )
+  const selectReservation = (
+    ids: string[],
+    target: { ptyId: string; processIncarnation: string },
+    expectedPhases: readonly number[]
+  ): Set<string> =>
+    new Set(
+      rows
+        .filter(
+          (row) =>
+            ids.includes(row.id) &&
+            expectedPhases.includes(row.pointer_enter_pending) &&
+            matchesReservation(row, target)
+        )
+        .map((row) => row.id)
+    )
+  const settleMailboxPointerEnter = vi.fn(
+    (
+      ids: string[],
+      target: { ptyId: string; processIncarnation: string },
+      expectedPhases: readonly number[]
+    ) => {
+      const settled = selectReservation(ids, target, expectedPhases)
+      for (const row of rows) {
+        if (settled.has(row.id)) {
+          row.delivered_at ??= 'now'
+        }
+      }
+      clearMailboxPointerEnter(settled)
+    }
+  )
+  const releaseMailboxPointerEnter = vi.fn(
+    (
+      ids: string[],
+      target: { ptyId: string; processIncarnation: string },
+      expectedPhases: readonly number[]
+    ) => {
+      const released = selectReservation(ids, target, expectedPhases)
+      for (const row of rows) {
+        if (released.has(row.id) && row.read === 0) {
+          row.delivered_at = null
+        }
+      }
+      clearMailboxPointerEnter(released)
+    }
+  )
+  const releasePendingMailboxPointerForPty = vi.fn((ptyId: string) => {
+    const reservedIds = new Set(
+      rows
+        .filter((row) => row.pointer_enter_pending === 1 && row.pointer_pty_id === ptyId)
+        .map((row) => row.id)
+    )
+    const pendingIds = new Set(
+      rows
+        .filter((row) => row.pointer_enter_pending > 0 && row.pointer_pty_id === ptyId)
+        .map((row) => row.id)
+    )
+    for (const row of rows) {
+      if (reservedIds.has(row.id) && row.read === 0) {
+        row.delivered_at = null
+      } else if (pendingIds.has(row.id) && row.read === 0) {
+        row.delivered_at ??= 'now'
+      }
+    }
+    clearMailboxPointerEnter(pendingIds)
   })
   return {
     rows,
+    runMailbox,
     markAsDelivered,
-    insert(subject: string): void {
+    markAsUndelivered,
+    releaseMailboxPointerEnter,
+    stageMailboxPointerEnter,
+    insert(subject: string, type: StoredMessageRow['type'] = 'status'): void {
       rows.push({
         id: `msg_${rows.length + 1}`,
         run_id: 'run_test',
@@ -251,7 +408,7 @@ function makeOrchestrationDbStub(toHandle: () => string) {
         to_handle: toHandle(),
         subject,
         body: '',
-        type: 'status',
+        type,
         priority: 'normal',
         thread_id: null,
         payload: null,
@@ -259,16 +416,63 @@ function makeOrchestrationDbStub(toHandle: () => string) {
         sequence: rows.length + 1,
         created_at: 'now',
         delivered_at: null,
-        sender_pane_key: null
+        sender_pane_key: null,
+        pointer_enter_pending: 0,
+        pointer_pty_id: null,
+        pointer_process_incarnation: null
       })
     },
     db: {
+      // Mirrors the real query: `read = 0 AND delivered_at IS NULL`.
       getUndeliveredUnreadMessages: (handle: string) =>
-        rows.filter((row) => row.to_handle === handle && !row.delivered_at),
+        rows.filter((row) => row.to_handle === handle && row.read === 0 && !row.delivered_at),
+      getUndeliveredUnreadMailboxHandles: () => [toHandle()],
+      getPendingMailboxPointerMessages: (handle: string) =>
+        rows.filter(
+          (row) => row.to_handle === handle && row.read === 0 && row.pointer_enter_pending === 1
+        ),
+      getPendingMailboxPointerHandles: () => [
+        ...new Set(
+          rows
+            .filter((row) => row.read === 0 && row.pointer_enter_pending === 1)
+            .map((row) => row.to_handle)
+        )
+      ],
       getActiveCoordinatorRun: () => null,
+      getCurrentRunForPane: () => ({ id: 'run_test' }),
+      getRun: () => ({ id: 'run_test', coordinator_handle: toHandle() }),
+      hasUndeliveredDirectMessageForRun: (runId: string, handle: string) =>
+        rows.some(
+          (row) =>
+            row.run_id === runId && row.to_handle === handle && row.read === 0 && !row.delivered_at
+        ),
+      routeUnreadDirectMessagesToRunMailbox: (runId: string, handle: string) => {
+        const routed = rows.filter(
+          (row) => row.run_id === runId && row.to_handle === handle && row.read === 0
+        )
+        for (const row of routed) {
+          row.to_handle = runMailbox
+        }
+        return {
+          routedCount: routed.length,
+          hasMore: false,
+          types: [...new Set(routed.map((row) => row.type))]
+        }
+      },
+      areUnreadMessages: (handle: string, ids: string[]) =>
+        ids.every((id) =>
+          rows.some((row) => row.id === id && row.to_handle === handle && row.read === 0)
+        ),
       // Consulted by onPtyExit's dispatch-failure path.
       getActiveDispatchForTerminal: () => null,
+      stageMailboxPointerEnter,
+      markMailboxPointerWriteAttempted,
+      markMailboxPointerEnterAttempted,
+      settleMailboxPointerEnter,
+      releaseMailboxPointerEnter,
+      releasePendingMailboxPointerForPty,
       markAsDelivered,
+      markAsUndelivered,
       close: () => {}
     }
   }
@@ -289,6 +493,137 @@ describe('push-on-idle orchestration delivery absence gate', () => {
     return { runtime, handle, write, stub }
   }
 
+  // Why: the gate that authorizes a push runs BEFORE the probe defers, so a
+  // same-id cold restore inside the probe window would otherwise be written to on
+  // the dead process's authority — ptyId is exactly what a same-id respawn keeps.
+  it('re-applies the live-idle gate when the probe answers after a same-id respawn', async () => {
+    let resolveProbe!: (value: boolean | null) => void
+    const { runtime, handle, write, stub } = await makeIdleLeafWithoutPtyRecord({
+      probePtyLiveness: () =>
+        new Promise<boolean | null>((resolve) => {
+          resolveProbe = resolve
+        })
+    })
+    stub.insert('for the old session')
+
+    runtime.notifyMessageArrived(handle, 'status')
+    await Promise.resolve()
+    expect(write).not.toHaveBeenCalled()
+
+    // The session dies and cold-restores under the same id while the probe is out.
+    runtime.onPtyExit(STALE_PTY_ID, 0)
+    runtime.onPtySpawned(STALE_PTY_ID, undefined, { awaitsRegistration: false })
+
+    resolveProbe(null)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(write).not.toHaveBeenCalled()
+    expect(stub.rows[0].delivered_at).toBeNull()
+
+    // The replacement's own live idle frame releases the row — through a fresh
+    // probe, since this leaf's pty is still unknown to the provider.
+    runtime.onPtyData(STALE_PTY_ID, '\x1b]0;Codex done\x07', 200)
+    resolveProbe(null)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(write).toHaveBeenCalledWith(
+      STALE_PTY_ID,
+      expect.stringContaining('You have 1 orchestration message')
+    )
+  })
+
+  // Why: a `remote:` pty answers probePtyLiveness with null before its first
+  // await (ipc/pty.ts), so the probe settles on a pure microtask chain. Without a
+  // macrotask hop the continuation runs BEFORE the resumption of a check resolved
+  // in the meantime — the waiter is already out of the map and its rows are not
+  // yet read, so the push injects exactly what that check is about to return.
+  it('waits a macrotask before delivering so a resolved check consumes its rows first', async () => {
+    const { runtime, handle, write, stub } = await makeIdleLeafWithoutPtyRecord({
+      probePtyLiveness: async () => null
+    })
+
+    const pulled: string[] = []
+    const checkResumed = runtime
+      .waitForMessage(stub.runMailbox, { typeFilter: ['worker_done'], timeoutMs: 60_000 })
+      .then(() => {
+        for (const row of stub.rows) {
+          if (row.type === 'worker_done' && row.read === 0) {
+            row.read = 1
+            pulled.push(row.subject)
+          }
+        }
+      })
+
+    stub.insert('unclaimed status')
+    runtime.notifyMessageArrived(handle, 'status')
+    // Land the completion while the probe chain is mid-flight — the slot where
+    // the continuation would otherwise overtake the check's resumption.
+    await Promise.resolve()
+    await Promise.resolve()
+    stub.insert('worker completion', 'worker_done')
+    runtime.notifyMessageArrived(handle, 'worker_done')
+
+    await checkResumed
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(pulled).toEqual(['worker completion'])
+    const payloads = write.mock.calls
+      .map(([, data]) => data)
+      .filter((data): data is string => typeof data === 'string')
+    const pointers = payloads.filter((data) => data.includes('orchestration check'))
+    expect(pointers).toHaveLength(1)
+    expect(pointers[0]).toContain('You have 1 orchestration message')
+    expect(payloads.some((data) => data.includes('unclaimed status'))).toBe(false)
+    expect(payloads.some((data) => data.includes('Subject: worker completion'))).toBe(false)
+  })
+
+  // Why: the notify-time reservation snapshot exists for a waiter resolved inside
+  // one microtask drain. The probe continuation runs many macrotasks later, and
+  // the probe dedup swallows every notify arriving meanwhile — so a reservation
+  // carried in here would skip a row with nothing left to retry it (#12536 again).
+  it('does not carry a stale waiter reservation into the probe continuation', async () => {
+    let resolveProbe!: (value: boolean | null) => void
+    const { runtime, handle, write, stub } = await makeIdleLeafWithoutPtyRecord({
+      probePtyLiveness: () =>
+        new Promise<boolean | null>((resolve) => {
+          resolveProbe = resolve
+        })
+    })
+
+    const waitPromise = runtime.waitForMessage(stub.runMailbox, {
+      typeFilter: ['worker_done'],
+      timeoutMs: 60_000
+    })
+    stub.insert('unclaimed status')
+    runtime.notifyMessageArrived(handle, 'status')
+    await Promise.resolve()
+    expect(write).not.toHaveBeenCalled()
+
+    // The reserving waiter goes away, then its type finally arrives — and the
+    // probe dedup drops this notify, so only the continuation can deliver it.
+    runtime.cancelMessageWaiters(stub.runMailbox)
+    await expect(waitPromise).resolves.toBe('cancelled')
+    stub.insert('late completion', 'worker_done')
+    runtime.notifyMessageArrived(handle, 'worker_done')
+    await Promise.resolve()
+
+    resolveProbe(null)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // Why twice: the probe continuation yields a turn before delivering.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const payloads = write.mock.calls
+      .map(([, data]) => data)
+      .filter((data): data is string => typeof data === 'string')
+    const pointers = payloads.filter((data) => data.includes('orchestration check'))
+    expect(pointers).toHaveLength(1)
+    expect(pointers[0]).toContain('You have 2 orchestration messages')
+    expect(payloads.some((data) => data.includes('unclaimed status'))).toBe(false)
+    expect(payloads.some((data) => data.includes('late completion'))).toBe(false)
+  })
+
   it('keeps messages queued instead of marking a proven-absent pty delivered', async () => {
     const { runtime, handle, write, stub } = await makeIdleLeafWithoutPtyRecord({
       probePtyLiveness: async () => false
@@ -299,7 +634,7 @@ describe('push-on-idle orchestration delivery absence gate', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(write).not.toHaveBeenCalled()
-    expect(stub.markAsDelivered).not.toHaveBeenCalled()
+    expect(stub.stageMailboxPointerEnter).not.toHaveBeenCalled()
     expect(stub.rows[0].delivered_at).toBeNull()
   })
 
@@ -311,13 +646,17 @@ describe('push-on-idle orchestration delivery absence gate', () => {
 
     runtime.deliverPendingMessagesForHandle(handle)
     await new Promise((resolve) => setTimeout(resolve, 0))
+    // Why twice: the probe continuation yields a turn before delivering.
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(write).toHaveBeenCalledWith(STALE_PTY_ID, expect.stringContaining('Subject: hello'))
+    expect(write).toHaveBeenCalledWith(
+      STALE_PTY_ID,
+      expect.stringContaining('You have 1 orchestration message')
+    )
   })
 
-  // Why: delivered_at stamps only in the delayed-Enter callback, so the whole
-  // write→settle span — not just the probe — must be single-flight; a trigger
-  // landing inside the 500ms window would re-read the same un-stamped rows.
+  // Why: the whole pointer→Enter span must be single-flight; a trigger inside
+  // the 500ms window must park until the sequence watermark advances.
   it('delivers once across concurrent probe triggers and an in-window re-trigger, then flushes parked rows', async () => {
     vi.useFakeTimers()
     try {
@@ -336,36 +675,39 @@ describe('push-on-idle orchestration delivery absence gate', () => {
       resolveProbe(null)
       await vi.advanceTimersByTimeAsync(0)
 
-      const firstSubjectWrites = () =>
+      const pointerWrites = () =>
         write.mock.calls.filter(
-          ([, data]) => typeof data === 'string' && data.includes('Subject: exactly once')
+          ([, data]) => typeof data === 'string' && data.includes('orchestration check')
         )
-      expect(firstSubjectWrites()).toHaveLength(1)
+      expect(pointerWrites()).toHaveLength(1)
+      expect(pointerWrites()[0]?.[1]).toContain('You have 1 orchestration message')
 
-      // Re-trigger INSIDE the 500ms Enter window: the first batch is written but
-      // not yet stamped, so a fresh probe cycle would re-inject it. (On the
-      // fixed code no new probe is armed — the trigger parks; resolveProbe then
-      // re-resolves the settled first probe, a no-op.)
+      // Re-trigger inside the Enter window parks; resolving the settled first
+      // probe again is a no-op.
       stub.insert('second message')
       runtime.deliverPendingMessagesForHandle(handle)
       resolveProbe(null)
       await vi.advanceTimersByTimeAsync(0)
-      expect(firstSubjectWrites()).toHaveLength(1)
+      expect(pointerWrites()).toHaveLength(1)
 
-      // Enter fires, delivered_at stamps, the flight settles, and the parked
-      // trigger re-runs on its own — arming a fresh probe for the new row.
+      // The submit-time liveness probe settles the flight, then the parked
+      // trigger arms its own delivery probe for the newer sequence.
       await vi.advanceTimersByTimeAsync(500)
       resolveProbe(null)
       await vi.advanceTimersByTimeAsync(0)
+      resolveProbe(null)
+      await vi.advanceTimersByTimeAsync(0)
 
-      const secondSubjectWrites = write.mock.calls.filter(
-        ([, data]) => typeof data === 'string' && data.includes('Subject: second message')
-      )
-      expect(secondSubjectWrites).toHaveLength(1)
-      expect(firstSubjectWrites()).toHaveLength(1)
+      expect(pointerWrites()).toHaveLength(2)
+      expect(pointerWrites()[1]?.[1]).toContain('You have 1 orchestration message')
 
       await vi.advanceTimersByTimeAsync(500)
-      expect(stub.rows.every((row) => row.delivered_at !== null)).toBe(true)
+      resolveProbe(null)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(stub.stageMailboxPointerEnter).toHaveBeenCalledTimes(2)
+      expect(stub.rows.map((row) => row.delivered_at)).toEqual(
+        stub.rows.map(() => expect.any(String))
+      )
     } finally {
       vi.useRealTimers()
     }
@@ -386,35 +728,32 @@ describe('push-on-idle orchestration delivery absence gate', () => {
       stub.insert('second')
       runtime.deliverPendingMessagesForHandle(handle)
 
-      const firstSubjectWrites = () =>
+      const pointerWrites = () =>
         write.mock.calls.filter(
-          ([, data]) => typeof data === 'string' && data.includes('Subject: first')
+          ([, data]) => typeof data === 'string' && data.includes('orchestration check')
         )
-      expect(firstSubjectWrites()).toHaveLength(1)
+      expect(pointerWrites()).toHaveLength(1)
+      expect(pointerWrites()[0]?.[1]).toContain('You have 1 orchestration message')
       expect(probe).not.toHaveBeenCalled()
 
-      // Settle flushes the parked trigger; the second row delivers alone —
-      // its batch must not re-contain the already-stamped first row.
+      // Settle flushes the parked trigger; both still-pending rows are counted,
+      // while the newer sequence authorizes exactly one fresh pointer.
       await vi.advanceTimersByTimeAsync(500)
-      const secondOnlyWrites = write.mock.calls.filter(
-        ([, data]) =>
-          typeof data === 'string' &&
-          data.includes('Subject: second') &&
-          !data.includes('Subject: first')
-      )
-      expect(secondOnlyWrites).toHaveLength(1)
-      expect(firstSubjectWrites()).toHaveLength(1)
+      expect(pointerWrites()).toHaveLength(2)
+      expect(pointerWrites()[1]?.[1]).toContain('You have 1 orchestration message')
 
       await vi.advanceTimersByTimeAsync(500)
-      expect(stub.rows.every((row) => row.delivered_at !== null)).toBe(true)
+      expect(stub.stageMailboxPointerEnter).toHaveBeenCalledTimes(2)
+      expect(stub.rows.map((row) => row.delivered_at)).toEqual(
+        stub.rows.map(() => expect.any(String))
+      )
     } finally {
       vi.useRealTimers()
     }
   })
 
   // Why: cold restore respawns under the SAME session id. An Enter armed for
-  // the dead incarnation must not fire into the replacement — it would inject
-  // \r and stamp rows the new session never received.
+  // the dead incarnation must not submit stale input into the replacement.
   it('retires an armed Enter when the pty exits and respawns under the same id inside the window', async () => {
     vi.useFakeTimers()
     try {
@@ -432,18 +771,29 @@ describe('push-on-idle orchestration delivery absence gate', () => {
 
       await vi.advanceTimersByTimeAsync(500)
       expect(write.mock.calls.filter(([, data]) => data === '\r')).toHaveLength(0)
-      expect(stub.markAsDelivered).not.toHaveBeenCalled()
+      expect(stub.stageMailboxPointerEnter).toHaveBeenCalledOnce()
+      expect(stub.releaseMailboxPointerEnter).toHaveBeenCalledOnce()
       expect(stub.rows[0].delivered_at).toBeNull()
 
-      // The replacement's own delivery starts a fresh flight and completes.
+      // The replacement's own delivery starts a fresh flight and completes —
+      // but only once ITS live title proves idle; the dead session's live status
+      // no longer authorizes a write into the new process.
       runtime.deliverPendingMessagesForHandle(handle)
+      expect(
+        write.mock.calls.filter(
+          ([, data]) => typeof data === 'string' && data.includes('orchestration check')
+        )
+      ).toHaveLength(1)
+      runtime.onPtyData(STALE_PTY_ID, '\x1b]0;Codex working\x07', 200)
+      runtime.onPtyData(STALE_PTY_ID, '\x1b]0;Codex done\x07', 201)
       const payloadWrites = write.mock.calls.filter(
-        ([, data]) => typeof data === 'string' && data.includes('Subject: for the old session')
+        ([, data]) => typeof data === 'string' && data.includes('orchestration check')
       )
       expect(payloadWrites).toHaveLength(2)
       await vi.advanceTimersByTimeAsync(500)
       expect(write.mock.calls.filter(([, data]) => data === '\r')).toHaveLength(1)
-      expect(stub.rows[0].delivered_at).not.toBeNull()
+      expect(stub.stageMailboxPointerEnter).toHaveBeenCalledTimes(2)
+      expect(stub.rows[0].delivered_at).toEqual(expect.any(String))
     } finally {
       vi.useRealTimers()
     }
@@ -456,24 +806,18 @@ describe('push-on-idle orchestration delivery absence gate', () => {
         probePtyLiveness: async () => null,
         hasPty: (ptyId) => ptyId === STALE_PTY_ID
       })
-      const internals = runtime as unknown as {
-        messageDeliveryFlightsByPtyId: Map<string, unknown>
-        parkedMessageRedeliveryLeavesByPtyId: Map<string, unknown>
-      }
       stub.insert('first')
       runtime.deliverPendingMessagesForHandle(handle)
       stub.insert('second')
       runtime.deliverPendingMessagesForHandle(handle)
-      expect(internals.messageDeliveryFlightsByPtyId.size).toBe(1)
-      expect(internals.parkedMessageRedeliveryLeavesByPtyId.size).toBe(1)
+      await Promise.resolve()
 
       runtime.onPtyExit(STALE_PTY_ID, 0)
-      expect(internals.messageDeliveryFlightsByPtyId.size).toBe(0)
-      expect(internals.parkedMessageRedeliveryLeavesByPtyId.size).toBe(0)
 
       await vi.advanceTimersByTimeAsync(500)
       expect(write.mock.calls.filter(([, data]) => data === '\r')).toHaveLength(0)
-      expect(stub.markAsDelivered).not.toHaveBeenCalled()
+      expect(stub.stageMailboxPointerEnter).toHaveBeenCalledOnce()
+      expect(stub.releaseMailboxPointerEnter).toHaveBeenCalledOnce()
       // No stray settle flushed the parked trigger into the dead pty.
       expect(write).toHaveBeenCalledTimes(1)
       expect(stub.rows.every((row) => row.delivered_at === null)).toBe(true)
@@ -503,7 +847,8 @@ describe('push-on-idle orchestration delivery absence gate', () => {
 
       await vi.advanceTimersByTimeAsync(500)
       expect(write.mock.calls.filter(([, data]) => data === '\r')).toHaveLength(0)
-      expect(stub.markAsDelivered).not.toHaveBeenCalled()
+      expect(stub.stageMailboxPointerEnter).toHaveBeenCalledOnce()
+      expect(stub.releaseMailboxPointerEnter).toHaveBeenCalledOnce()
       expect(stub.rows[0].delivered_at).toBeNull()
     } finally {
       vi.useRealTimers()

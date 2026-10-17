@@ -1,0 +1,288 @@
+import type { ExecutionHostId } from '../../../../../../shared/execution-host'
+import type { AppState } from '../../../types'
+import type { WorktreePurgeTarget, WorktreePurgeTargets } from '../../worktree-helpers'
+import { forgetHugeRepoWarningDismissalsForWorktrees } from '@/lib/source-control-huge-repo-warning-dismissals'
+import { parseWorkspaceKey } from '../../../../../../shared/workspace-scope'
+import { pruneHostedReviewLinkMutationGenerations } from '../metadata/hosted-review-link-mutation'
+import { collectWorktreePurgeDoomedIds } from './worktree-purge-doomed-ids'
+import { createWorktreePurgeOmitters } from './worktree-purge-omitters'
+import { omitSleepingAgentSessionsForWorktrees } from './sleeping-agent-session-omission'
+import { removeDeleteStatesForWorktreeIds } from './worktree-delete-state'
+import { removeWorktreeVisitEntriesForTargets } from '@/lib/worktree-visit-recency'
+import { forgetAmbiguousOwnerWarnings } from '../listing/worktree-owner-settings'
+import { forgetWorktreeSleepIntent } from '@/lib/worktree-sleep-intent'
+import { settleAgentLaunchPaneStart } from '@/lib/agent-launch-pane-start'
+import {
+  getStructuredAgentSessionLaunchOwner,
+  markStructuredAgentSessionLaunchCancelledSilently,
+  shouldRetainStructuredAgentSessionLaunchTab,
+  structuredLaunchStates
+} from '@/lib/structured-agent-session-launch-registry'
+import { discardStructuredAgentSessionChatSends } from '@/lib/structured-agent-session-launch-prompt'
+import { retireStructuredAgentSessionReadOwner } from '@/components/native-chat/structured-agent-session-read-owner-registry'
+import { clearWebSessionFocusIntentIfMatches } from '@/runtime/web-session-focus-intent'
+import {
+  structuredAgentSessionFocusOwner,
+  structuredAgentSessionTargetForTab,
+  structuredAgentSessionTargetForHost
+} from '@/runtime/structured-agent-session-owner'
+import { removeTabsAttention } from '../../workspace-attention/subject-attention-transitions'
+import { removeWorktreeLayout } from '../../tabs/worktree-layout-lifecycle'
+
+/** Builds a bulk cleanup patch and clears auxiliary warning records without requiring individual terminal teardown. */
+export function buildWorktreePurgeState(
+  s: AppState,
+  worktreeTargets: WorktreePurgeTargets
+): Partial<AppState> {
+  const normalizedTargets: WorktreePurgeTarget[] = worktreeTargets.map((target) =>
+    typeof target === 'string' ? { id: target } : target
+  )
+  const worktreeIdSet = new Set(normalizedTargets.map((target) => target.id))
+  // Why: bulk purges bypass close actions, so provisional ownership must die before tab state does.
+  const cancelledSessionIds = cancelStructuredLaunchesForWorktrees(worktreeIdSet)
+  for (const worktreeId of worktreeIdSet) {
+    // A launch tab that never spawned has no spawn left to answer its prompt's wait.
+    for (const tab of s.tabsByWorktree[worktreeId] ?? []) {
+      if (tab.agentLaunchPane) {
+        settleAgentLaunchPaneStart(tab.id, tab.agentLaunchPane.leafId, null)
+      }
+    }
+    for (const tab of s.unifiedTabsByWorktree[worktreeId] ?? []) {
+      if (tab.contentType === 'agent-session') {
+        const target = structuredAgentSessionTargetForTab(s, tab)
+        if (target) {
+          retireStructuredAgentSessionReadOwner(tab.entityId, target)
+        }
+      }
+      // A retained launch here survived a reload, so its persisted record names its host.
+      const owner =
+        tab.contentType === 'agent-session' && !cancelledSessionIds.has(tab.entityId)
+          ? getStructuredAgentSessionLaunchOwner(tab.entityId)
+          : undefined
+      const target = structuredAgentSessionTargetForHost(owner)
+      if (
+        owner &&
+        target &&
+        shouldRetainStructuredAgentSessionLaunchTab(worktreeId, tab.entityId)
+      ) {
+        markStructuredAgentSessionLaunchCancelledSilently(worktreeId, tab.entityId, owner)
+        discardStructuredAgentSessionChatSends(tab.entityId)
+        clearWebSessionFocusIntentIfMatches(
+          structuredAgentSessionFocusOwner(target),
+          worktreeId,
+          `agent-session:${tab.entityId}`
+        )
+      }
+    }
+  }
+  pruneHostedReviewLinkMutationGenerations(worktreeIdSet)
+  // Why: ids are repo::path, so a worktree recreated at the same path must not inherit a stale sleep.
+  for (const id of worktreeIdSet) {
+    forgetWorktreeSleepIntent(id)
+  }
+  // Why: every authoritative and explicit purge converges here, so a deleted path can't inherit stale UI state.
+  forgetHugeRepoWarningDismissalsForWorktrees(worktreeIdSet)
+  forgetAmbiguousOwnerWarnings(worktreeIdSet)
+
+  const doomed = collectWorktreePurgeDoomedIds(s, worktreeIdSet)
+  const {
+    omitByWorktree,
+    omitWorkspaceLineageByWorktree,
+    pruneRightSidebarTabByWorktree,
+    omitByTabId,
+    omitByPtyId,
+    omitByPaneKeyTabPrefix,
+    omitByBrowserWorkspaceId,
+    omitByPageId,
+    omitByFileId
+  } = createWorktreePurgeOmitters(s, worktreeIdSet, doomed)
+
+  const removedActive = s.activeWorktreeId != null && worktreeIdSet.has(s.activeWorktreeId)
+  const activeFileCleared = s.activeFileId != null && doomed.removedFileIds.has(s.activeFileId)
+
+  const nextEverActivatedWorktreeIds = (() => {
+    let hit = false
+    for (const id of worktreeIdSet) {
+      if (s.everActivatedWorktreeIds.has(id)) {
+        hit = true
+        break
+      }
+    }
+    if (!hit) {
+      return s.everActivatedWorktreeIds
+    }
+    const next = new Set(s.everActivatedWorktreeIds)
+    for (const id of worktreeIdSet) {
+      next.delete(id)
+    }
+    return next
+  })()
+  const nextAgentStatusByPaneKey = omitByPaneKeyTabPrefix(s.agentStatusByPaneKey)
+  const tabPrefixedSleeping = {
+    sleepingAgentSessionsByPaneKey: omitByPaneKeyTabPrefix(s.sleepingAgentSessionsByPaneKey),
+    agentLaunchConfigByPaneKey: omitByPaneKeyTabPrefix(s.agentLaunchConfigByPaneKey)
+  }
+  // Why both: tab-prefix omission misses a sleeping record whose tab is already gone.
+  const nextSleeping = {
+    ...tabPrefixedSleeping,
+    ...omitSleepingAgentSessionsForWorktrees(tabPrefixedSleeping, worktreeIdSet)
+  }
+
+  return {
+    ...removeWorktreeLayout(s, {
+      worktreeIds: worktreeIdSet,
+      tabIds: doomed.doomedTabIds,
+      activeFileCleared
+    }),
+    // Worktree-scoped terminal/tab state
+    worktreeLineageById: omitByWorktree(s.worktreeLineageById),
+    workspaceLineageByChildKey: omitWorkspaceLineageByWorktree(s.workspaceLineageByChildKey),
+    localOnlyScrollbackByTabId: omitByTabId(s.localOnlyScrollbackByTabId),
+    runtimePaneTitlesByTabId: omitByTabId(s.runtimePaneTitlesByTabId),
+    automaticAgentResumeClaimsByTabId: omitByTabId(s.automaticAgentResumeClaimsByTabId),
+    nativeChatLaunchPromptByTabId: omitByTabId(s.nativeChatLaunchPromptByTabId),
+    nativeChatLaunchDraftByTabId: omitByTabId(s.nativeChatLaunchDraftByTabId),
+    // Why: bulk/hydration purge runs no terminal teardown, so it must drop the per-tab pane-expand flags itself.
+    expandedPaneByTabId: omitByTabId(s.expandedPaneByTabId),
+    canExpandPaneByTabId: omitByTabId(s.canExpandPaneByTabId),
+    // Why: these per-tab/per-pty terminal+agent maps evict on the single removeWorktree teardown path; the bulk reconcile / remove-project / hydration-stale paths run no teardown, so without these each strands an entry per tab/pane of externally-removed worktrees.
+    lastKnownRelayPtyIdByTabId: omitByTabId(s.lastKnownRelayPtyIdByTabId),
+    // Why: liveness-authoritative reconnect maps (orphan sweep reads them); drop purged tabs' entries here too so a re-materialized id can't inherit phantom liveness.
+    pendingReconnectPtyIdByTabId: omitByTabId(s.pendingReconnectPtyIdByTabId),
+    unverifiedPtyLossTabIds: omitByTabId(s.unverifiedPtyLossTabIds),
+    deferredSshSessionIdsByTabId: omitByTabId(s.deferredSshSessionIdsByTabId),
+    pendingInitialCwdByTabId: omitByTabId(s.pendingInitialCwdByTabId),
+    pendingIssueCommandSplitByTabId: omitByTabId(s.pendingIssueCommandSplitByTabId),
+    pendingStartupByTabId: omitByTabId(s.pendingStartupByTabId),
+    codexRestartNoticeByPtyId: omitByPtyId(s.codexRestartNoticeByPtyId),
+    migrationUnsupportedByPtyId: omitByPtyId(s.migrationUnsupportedByPtyId),
+    suppressedPtyExitIds: omitByPtyId(s.suppressedPtyExitIds),
+    pendingPaneAccountRestarts: omitByPtyId(s.pendingPaneAccountRestarts),
+    // Why: these agent-status/unread/input maps clear only on the single removeWorktree teardown path; the bulk reconcile / remove-project / hydration-stale paths run no teardown, so without this they orphan an entry per agent pane (plus a phantom unread badge).
+    // retainedAgentsByPaneKey and runtimeAgentOrchestrationByPaneKey are omitted here — both self-heal (pruneRetainedAgents on worktreesByRepo change; runtime map replaced wholesale each sync).
+    agentStatusByPaneKey: nextAgentStatusByPaneKey,
+    ...(nextAgentStatusByPaneKey !== s.agentStatusByPaneKey
+      ? { agentStatusEpoch: s.agentStatusEpoch + 1 }
+      : {}),
+    agentLaunchConfigByPaneKey: nextSleeping.agentLaunchConfigByPaneKey,
+    acknowledgedAgentsByPaneKey: omitByPaneKeyTabPrefix(s.acknowledgedAgentsByPaneKey),
+    activityClearedAtByPaneKey: omitByPaneKeyTabPrefix(s.activityClearedAtByPaneKey),
+    manuallyUnreadTurnsByPaneKey: omitByPaneKeyTabPrefix(s.manuallyUnreadTurnsByPaneKey),
+    paneForegroundAgentByPaneKey: omitByPaneKeyTabPrefix(s.paneForegroundAgentByPaneKey),
+    sleepingAgentSessionsByPaneKey: nextSleeping.sleepingAgentSessionsByPaneKey,
+    ...removeTabsAttention(s, doomed.doomedTabIds),
+    lastTerminalInputAtByPaneKey: omitByPaneKeyTabPrefix(s.lastTerminalInputAtByPaneKey),
+    // Delete state
+    deleteStateByWorktreeId: removeDeleteStatesForWorktreeIds(
+      s.deleteStateByWorktreeId,
+      worktreeIdSet
+    ),
+    baseStatusByWorktreeId: omitByWorktree(s.baseStatusByWorktreeId),
+    remoteBranchConflictByWorktreeId: omitByWorktree(s.remoteBranchConflictByWorktreeId),
+    // File search
+    fileSearchStateByWorktree: omitByWorktree(s.fileSearchStateByWorktree),
+    // Browser state
+    browserPagesByWorkspace: omitByBrowserWorkspaceId(s.browserPagesByWorkspace),
+    recentlyClosedBrowserTabsByWorktree: omitByWorktree(s.recentlyClosedBrowserTabsByWorktree),
+    // Why: keyed by page/workspace id, only cleaned by closeBrowserTab on the single-removal path; the bulk reconcile missed them, orphaning an entry per page of externally-removed worktrees.
+    browserAnnotationsByPageId: omitByPageId(s.browserAnnotationsByPageId),
+    browserAnnotationMarkerIdsByPageId: omitByPageId(s.browserAnnotationMarkerIdsByPageId),
+    remoteBrowserPageHandlesByPageId: omitByPageId(s.remoteBrowserPageHandlesByPageId),
+    pendingAddressBarFocusByPageId: omitByPageId(s.pendingAddressBarFocusByPageId),
+    // createBrowserTab writes both the workspace id and the page id into this map.
+    pendingAddressBarFocusByTabId: omitByPageId(
+      omitByBrowserWorkspaceId(s.pendingAddressBarFocusByTabId)
+    ),
+    recentlyClosedBrowserPagesByWorkspace: omitByBrowserWorkspaceId(
+      s.recentlyClosedBrowserPagesByWorkspace
+    ),
+    // Editor state
+    pendingReconnectTabByWorktree: omitByWorktree(s.pendingReconnectTabByWorktree),
+    rightSidebarTabByWorktree: pruneRightSidebarTabByWorktree(),
+    rightSidebarExplorerViewByWorktree: omitByWorktree(s.rightSidebarExplorerViewByWorktree ?? {}),
+    // Git status caches
+    gitStatusByWorktree: omitByWorktree(s.gitStatusByWorktree),
+    // Why: keyed by worktreeId; re-keyed on rename but missed by both removal paths (upstream-status entry).
+    remoteStatusesByWorktree: omitByWorktree(s.remoteStatusesByWorktree),
+    gitStatusHeadByWorktree: omitByWorktree(s.gitStatusHeadByWorktree),
+    gitBranchLineTotalByWorktree: omitByWorktree(s.gitBranchLineTotalByWorktree),
+    gitIgnoredPathsByWorktree: omitByWorktree(s.gitIgnoredPathsByWorktree),
+    gitConflictOperationByWorktree: omitByWorktree(s.gitConflictOperationByWorktree),
+    trackedConflictPathsByWorktree: omitByWorktree(s.trackedConflictPathsByWorktree),
+    gitBranchChangesByWorktree: omitByWorktree(s.gitBranchChangesByWorktree),
+    gitBranchCompareSummaryByWorktree: omitByWorktree(s.gitBranchCompareSummaryByWorktree),
+    gitBranchCompareRequestKeyByWorktree: omitByWorktree(s.gitBranchCompareRequestKeyByWorktree),
+    gitBranchCompareRequestStatusHeadByWorktree: omitByWorktree(
+      s.gitBranchCompareRequestStatusHeadByWorktree
+    ),
+    // Why: keyed by worktreeId; without this it leaks a huge-status marker per removed worktree.
+    gitStatusHugeByWorktree: omitByWorktree(s.gitStatusHugeByWorktree),
+    explorerDisplayRootByWorktree: omitByWorktree(s.explorerDisplayRootByWorktree),
+    showDotfilesByWorktree: omitByWorktree(s.showDotfilesByWorktree),
+    expandedDirs: omitByWorktree(s.expandedDirs),
+    // Per-file editor state for removed files
+    editorDrafts: omitByFileId(s.editorDrafts),
+    markdownViewMode: omitByFileId(s.markdownViewMode),
+    markdownRichModeSizeOverride: omitByFileId(s.markdownRichModeSizeOverride),
+    markdownFrontmatterVisible: omitByFileId(s.markdownFrontmatterVisible),
+    // Why: keyed by fileId; the bulk reconcile path previously kept these, leaking a cursor-line / view-mode entry per removed file.
+    editorCursorLine: omitByFileId(s.editorCursorLine),
+    editorViewMode: omitByFileId(s.editorViewMode),
+    // Why: keyed by worktreeId; re-keyed on rename but missed by both removal paths (editor-undo / Cmd+Shift+T snapshots).
+    recentlyClosedEditorTabsByWorktree: omitByWorktree(s.recentlyClosedEditorTabsByWorktree),
+    recentlyClosedTerminalTabsByWorktree: omitByWorktree(s.recentlyClosedTerminalTabsByWorktree),
+    recentlyClosedTabKindsByWorktree: omitByWorktree(s.recentlyClosedTabKindsByWorktree),
+    // Top-level actives
+    everActivatedWorktreeIds: nextEverActivatedWorktreeIds,
+    lastVisitedAtByWorktreeId: removeWorktreeVisitEntriesForTargets(
+      s.lastVisitedAtByWorktreeId,
+      normalizedTargets
+    ),
+    // Why: keyed by worktreeId; re-keyed on rename but missed by both removal paths (write-once default-terminal guard).
+    defaultTerminalTabsAppliedByWorktreeId: omitByWorktree(
+      s.defaultTerminalTabsAppliedByWorktreeId
+    ),
+    activeWorktreeId: removedActive ? null : s.activeWorktreeId,
+    activeWorkspaceExecutionHostId: removedActive ? null : s.activeWorkspaceExecutionHostId,
+    activeWorkspaceKey: (() => {
+      if (s.activeWorkspaceKey && worktreeIdSet.has(s.activeWorkspaceKey)) {
+        return null
+      }
+      const activeScope = s.activeWorkspaceKey ? parseWorkspaceKey(s.activeWorkspaceKey) : null
+      return activeScope?.type === 'worktree' && worktreeIdSet.has(activeScope.worktreeId)
+        ? null
+        : s.activeWorkspaceKey
+    })()
+  }
+}
+
+/** Cancels provisional structured-chat launches in these worktrees, on the given host only. */
+export function cancelStructuredLaunchesForWorktrees(
+  worktreeIdSet: ReadonlySet<string>,
+  ownedByHost?: (worktreeId: string, executionHostId: ExecutionHostId) => boolean
+): Set<string> {
+  const cancelledSessionIds = new Set<string>()
+  for (const launch of structuredLaunchStates()) {
+    const worktreeId = launch.intent.worktreeId
+    if (
+      worktreeIdSet.has(worktreeId) &&
+      (!ownedByHost || ownedByHost(worktreeId, launch.intent.executionHostId)) &&
+      shouldRetainStructuredAgentSessionLaunchTab(worktreeId, launch.intent.sessionId)
+    ) {
+      markStructuredAgentSessionLaunchCancelledSilently(
+        worktreeId,
+        launch.intent.sessionId,
+        launch.intent.executionHostId
+      )
+      discardStructuredAgentSessionChatSends(launch.intent.sessionId)
+      retireStructuredAgentSessionReadOwner(launch.intent.sessionId, launch.intent.target)
+      clearWebSessionFocusIntentIfMatches(
+        structuredAgentSessionFocusOwner(launch.intent.target),
+        worktreeId,
+        `agent-session:${launch.intent.sessionId}`
+      )
+      cancelledSessionIds.add(launch.intent.sessionId)
+    }
+  }
+  return cancelledSessionIds
+}

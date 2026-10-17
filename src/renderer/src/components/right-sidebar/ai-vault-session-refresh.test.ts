@@ -4,7 +4,11 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatusEntry } from '../../../../shared/agent-status-types'
-import type { AiVaultListResult, AiVaultSession } from '../../../../shared/ai-vault-types'
+import type {
+  AiVaultListArgs,
+  AiVaultListResult,
+  AiVaultSession
+} from '../../../../shared/ai-vault-types'
 import type { ExecutionHostScope } from '../../../../shared/execution-host'
 import { useAppStore } from '@/store'
 import {
@@ -13,6 +17,7 @@ import {
   useAiVaultSessionRefresh
 } from './ai-vault-session-refresh'
 import { DEFAULT_AI_VAULT_SESSION_LIMIT, type AiVaultSessionLimit } from './ai-vault-session-limit'
+import { withNonSecureContextCrypto } from '@/lib/non-secure-context-crypto-stub'
 
 const EMPTY_RESULT: AiVaultListResult = {
   sessions: [],
@@ -22,8 +27,8 @@ const EMPTY_RESULT: AiVaultListResult = {
 
 const THROTTLE_MS = 30_000
 
-const listSessionsMock = vi.fn<(args: unknown) => Promise<AiVaultListResult>>()
-const cancelListSessionsMock = vi.fn<() => Promise<void>>()
+const listSessionsMock = vi.fn<(args: AiVaultListArgs) => Promise<AiVaultListResult>>()
+const cancelListSessionsMock = vi.fn<(args: { requestToken: string }) => Promise<void>>()
 
 // Captures the hook's subscription to the main-process window-focus push.
 let windowFocusCallback: (() => void) | null = null
@@ -362,16 +367,6 @@ describe('useAiVaultSessionRefresh refocus behavior', () => {
     expect(lastCallArgs()).toMatchObject({ force: false })
   })
 
-  it('does not force transcript scans for refocus events', async () => {
-    await renderHook()
-    await flushMicrotasks()
-    expect(listSessionsMock).toHaveBeenCalledTimes(1)
-
-    await fireWindowFocused()
-    expect(listSessionsMock).toHaveBeenCalledTimes(2)
-    expect(lastCallArgs()).toMatchObject({ force: false })
-  })
-
   it('ignores focus/visibility events while the document is hidden', async () => {
     await renderHook()
     await flushMicrotasks()
@@ -431,13 +426,213 @@ describe('useAiVaultSessionRefresh refocus behavior', () => {
     await fireWindowFocused()
     expect(latest?.scanResult).toBe(firstResult)
 
+    // A reminted stamp with the same empty body is still the snapshot on screen.
     listSessionsMock.mockResolvedValueOnce({
       ...EMPTY_RESULT,
       scannedAt: '2026-07-01T00:00:02.000Z'
     })
     await advance(THROTTLE_MS + 1)
     await fireWindowFocused()
-    expect(latest?.scanResult).not.toBe(firstResult)
+    expect(latest?.scanResult).toBe(firstResult)
+  })
+
+  // An 'all' result is a merge of legs on independent clocks, stamped with the
+  // newest leg. A paired host whose clock lags the desktop can return new
+  // sessions while the merged stamp repeats, so the stamp guard above must not
+  // decide anything under 'all' — only the structural reconcile may.
+  it('applies a changed all-host result whose merged scannedAt stood still', async () => {
+    const pinned = '2026-07-01T00:00:00.000Z'
+    listSessionsMock.mockResolvedValueOnce({
+      sessions: [makeVaultSession(1)],
+      issues: [],
+      scannedAt: pinned
+    })
+    await renderHook([], 'all')
+    await flushMicrotasks()
+    expect(latest?.sessions).toHaveLength(1)
+
+    listSessionsMock.mockResolvedValueOnce({
+      sessions: [makeVaultSession(1), makeVaultSession(2)],
+      issues: [],
+      scannedAt: pinned
+    })
+    await advance(THROTTLE_MS + 1)
+    await fireWindowFocused()
+
+    expect(latest?.sessions).toHaveLength(2)
+    expect(latest?.sessions[1]?.id).toBe('session-2')
+  })
+
+  // The main process routes an empty or unrecognized scope to the same all-host
+  // merge, so the renderer has to read those as merged too or the guard returns
+  // for exactly the results it cannot reason about.
+  it('treats a scope that normalizes to all-host as merged', async () => {
+    const pinned = '2026-07-01T00:00:00.000Z'
+    listSessionsMock.mockResolvedValueOnce({
+      sessions: [makeVaultSession(1)],
+      issues: [],
+      scannedAt: pinned
+    })
+    await renderHook([], '' as ExecutionHostScope)
+    await flushMicrotasks()
+    expect(latest?.sessions).toHaveLength(1)
+
+    listSessionsMock.mockResolvedValueOnce({
+      sessions: [makeVaultSession(1), makeVaultSession(2)],
+      issues: [],
+      scannedAt: pinned
+    })
+    await advance(THROTTLE_MS + 1)
+    await fireWindowFocused()
+
+    expect(latest?.sessions).toHaveLength(2)
+  })
+
+  it('still reuses all-host identity when a repeated stamp carries an unchanged body', async () => {
+    const pinned = '2026-07-01T00:00:00.000Z'
+    const first: AiVaultListResult = {
+      sessions: [makeVaultSession(1)],
+      issues: [],
+      scannedAt: pinned
+    }
+    listSessionsMock.mockResolvedValueOnce(first)
+    await renderHook([], 'all')
+    await flushMicrotasks()
+    const applied = latest?.scanResult
+    const appliedSessions = latest?.sessions
+
+    // Dropping the stamp guard for 'all' must not reintroduce the churn: the
+    // reconcile still has to recognise an independently cloned identical body.
+    listSessionsMock.mockResolvedValueOnce(structuredClone(first))
+    await advance(THROTTLE_MS + 1)
+    await fireWindowFocused()
+
+    expect(latest?.scanResult).toBe(applied)
+    expect(latest?.sessions).toBe(appliedSessions)
+  })
+
+  it('keeps session row identity when a reminted scan is a structuredClone of the same nested rows', async () => {
+    const session = makeVaultSession(1)
+    const first: AiVaultListResult = {
+      sessions: [
+        {
+          ...session,
+          previewMessages: [
+            {
+              role: 'user',
+              text: 'keep session list identity on reminted scannedAt',
+              timestamp: session.modifiedAt
+            },
+            {
+              role: 'assistant',
+              text: 'reuse previous row refs when the transcript did not change',
+              timestamp: session.modifiedAt
+            }
+          ],
+          previewMessagesTruncated: true,
+          lastUserPrompt: 'keep session list identity on reminted scannedAt',
+          subagent: {
+            parentSessionId: session.sessionId,
+            agentType: 'Explore',
+            status: 'completed'
+          }
+        }
+      ],
+      issues: [],
+      scannedAt: '2026-07-01T00:00:00.000Z'
+    }
+    listSessionsMock.mockResolvedValueOnce(first)
+    await renderHook()
+    await flushMicrotasks()
+    const appliedSessions = latest?.sessions
+    const appliedResult = latest?.scanResult
+    expect(appliedSessions?.[0]?.previewMessages).toHaveLength(2)
+
+    const reminted = structuredClone(first)
+    reminted.scannedAt = '2026-07-01T00:00:15.000Z'
+    expect(reminted.sessions).not.toBe(first.sessions)
+    expect(reminted.sessions[0]).not.toBe(first.sessions[0])
+    expect(reminted.sessions[0]?.previewMessages).not.toBe(first.sessions[0]?.previewMessages)
+
+    listSessionsMock.mockResolvedValueOnce(reminted)
+    await advance(THROTTLE_MS + 1)
+    await fireWindowFocused()
+
+    expect(latest?.sessions).toBe(appliedSessions)
+    expect(latest?.sessions[0]).toBe(appliedSessions?.[0])
+    expect(latest?.sessions[0]?.previewMessages).toBe(appliedSessions?.[0]?.previewMessages)
+    expect(latest?.scanResult).toBe(appliedResult)
+  })
+
+  it('replaces the changed row when a reminted scan edits nested preview text', async () => {
+    const session = makeVaultSession(1)
+    const sibling = makeVaultSession(2)
+    const first: AiVaultListResult = {
+      sessions: [
+        {
+          ...session,
+          previewMessages: [{ role: 'user', text: 'original ask', timestamp: session.modifiedAt }]
+        },
+        sibling
+      ],
+      issues: [],
+      scannedAt: '2026-07-01T00:00:00.000Z'
+    }
+    listSessionsMock.mockResolvedValueOnce(first)
+    await renderHook()
+    await flushMicrotasks()
+    const appliedSessions = latest?.sessions
+    expect(appliedSessions).toHaveLength(2)
+
+    const reminted = structuredClone(first)
+    reminted.scannedAt = '2026-07-01T00:00:15.000Z'
+    const changed = reminted.sessions[0]
+    const preview = changed?.previewMessages[0]
+    if (!changed || !preview) {
+      throw new Error('expected a nested preview message')
+    }
+    reminted.sessions[0] = {
+      ...changed,
+      previewMessages: [{ ...preview, text: 'follow-up ask' }]
+    }
+
+    listSessionsMock.mockResolvedValueOnce(reminted)
+    await advance(THROTTLE_MS + 1)
+    await fireWindowFocused()
+
+    expect(latest?.sessions).not.toBe(appliedSessions)
+    expect(latest?.sessions[0]).not.toBe(appliedSessions?.[0])
+    expect(latest?.sessions[0]?.previewMessages[0]?.text).toBe('follow-up ask')
+    expect(latest?.sessions[1]).toBe(appliedSessions?.[1])
+  })
+
+  it('appends a new session on refocus and keeps the surviving row identity', async () => {
+    const first: AiVaultListResult = {
+      sessions: [makeVaultSession(1)],
+      issues: [],
+      scannedAt: '2026-07-01T00:00:00.000Z'
+    }
+    listSessionsMock.mockResolvedValueOnce(first)
+    await renderHook()
+    await flushMicrotasks()
+    const surviving = latest?.sessions[0]
+    const previous = first.sessions[0]
+    expect(surviving?.id).toBe('session-1')
+    if (!previous) {
+      throw new Error('expected the first scan to include a session')
+    }
+
+    listSessionsMock.mockResolvedValueOnce({
+      sessions: [structuredClone(previous), makeVaultSession(2)],
+      issues: [],
+      scannedAt: '2026-07-01T00:00:15.000Z'
+    })
+    await advance(THROTTLE_MS + 1)
+    await fireWindowFocused()
+
+    expect(latest?.sessions).toHaveLength(2)
+    expect(latest?.sessions[0]).toBe(surviving)
+    expect(latest?.sessions[1]?.id).toBe('session-2')
   })
 
   it('keeps the current list when a superseded scan resolves cancelled', async () => {
@@ -467,6 +662,49 @@ describe('useAiVaultSessionRefresh refocus behavior', () => {
     })
 
     expect(lastCallArgs()).toMatchObject({ force: true })
+  })
+
+  it('replaces a stuck scan on manual Refresh without cancelling an automatic rescan', async () => {
+    let resolveInitial: ((result: AiVaultListResult) => void) | null = null
+    let resolveReplacement: ((result: AiVaultListResult) => void) | null = null
+    listSessionsMock
+      .mockImplementationOnce(
+        () => new Promise<AiVaultListResult>((resolve) => (resolveInitial = resolve))
+      )
+      .mockImplementationOnce(
+        () => new Promise<AiVaultListResult>((resolve) => (resolveReplacement = resolve))
+      )
+    await renderHook()
+    expect(latest?.loading).toBe(true)
+
+    await setAgentStatuses({ 'pane-1': makeAgentEntry('new-session') })
+    expect(listSessionsMock).toHaveBeenCalledTimes(1)
+    expect(cancelListSessionsMock).not.toHaveBeenCalled()
+
+    cancelListSessionsMock.mockImplementationOnce(async () => {
+      resolveInitial?.({
+        ...EMPTY_RESULT,
+        sessions: [makeVaultSession(1)],
+        cancelled: true
+      })
+    })
+    await act(async () => {
+      await latest?.refresh({ force: true })
+    })
+    await flushMicrotasks()
+
+    expect(cancelListSessionsMock).toHaveBeenCalledExactlyOnceWith({
+      requestToken: listSessionsMock.mock.calls[0]?.[0].requestToken
+    })
+    expect(listSessionsMock).toHaveBeenCalledTimes(2)
+    expect(listSessionsMock.mock.calls[1]?.[0]).toMatchObject({ force: true })
+    expect(latest?.scanResult).toBeNull()
+    expect(latest?.error).toBeNull()
+
+    await act(async () => {
+      resolveReplacement?.({ ...EMPTY_RESULT, sessions: [makeVaultSession(2)] })
+    })
+    expect(latest?.sessions.map((session) => session.id)).toEqual(['session-2'])
   })
 
   it('keeps refocus cache-backed after a manual force refresh', async () => {
@@ -554,5 +792,68 @@ describe('useAiVaultSessionRefresh in-app agent session behavior', () => {
 
     await setAgentStatuses({ 'pane-2': makeAgentEntry('sess-2', 'working') })
     expect(listSessionsMock).toHaveBeenCalledTimes(3)
+  })
+
+  // Reported against an adhoc build: a workspace whose editor was loading files fine still showed
+  // "SSH relay is not ready" with "0 shown · 0 recent" in this panel. That error is what the relay
+  // throws before it is ready, which is ordinary at startup and for the window a reconnect leaves it
+  // not-ready — but nothing here retried on the relay simply becoming ready. The remaining triggers
+  // are mount, window refocus and a new agent session id, so the error stuck while the rest of the
+  // workspace worked. The file explorer already recovers off this same signal.
+  it('retries after a not-ready failure once the SSH connection lands', async () => {
+    listSessionsMock.mockRejectedValueOnce(new Error('SSH relay is not ready'))
+    await renderHook(['/home/neil/projects/orca'])
+    await flushMicrotasks()
+
+    expect(latest?.error).toBe('SSH relay is not ready')
+    const callsWhileBroken = listSessionsMock.mock.calls.length
+
+    listSessionsMock.mockResolvedValue(EMPTY_RESULT)
+    await act(async () => {
+      useAppStore.setState({ sshConnectedGeneration: 1 })
+    })
+    await flushMicrotasks()
+
+    expect(
+      listSessionsMock.mock.calls.length,
+      'the panel never retried after SSH became ready'
+    ).toBeGreaterThan(callsWhileBroken)
+    expect(latest?.error).toBeNull()
+  })
+
+  it('does not rescan on a connection bump when the last listing succeeded', async () => {
+    // Gated on a prior error so a local workspace, or one that already listed fine, does not rescan
+    // every time some unrelated host connects.
+    listSessionsMock.mockResolvedValue(EMPTY_RESULT)
+    await renderHook(['/home/neil/projects/orca'])
+    await flushMicrotasks()
+
+    expect(latest?.error).toBeNull()
+    const callsWhileHealthy = listSessionsMock.mock.calls.length
+
+    await act(async () => {
+      useAppStore.setState({ sshConnectedGeneration: 1 })
+    })
+    await flushMicrotasks()
+
+    expect(listSessionsMock.mock.calls.length).toBe(callsWhileHealthy)
+  })
+})
+
+// Regression for #18096: over plain HTTP the browser hides crypto.randomUUID, so minting
+// the request token with a raw call threw during render and the panel showed "The right
+// sidebar hit an error". The fallback must still be a well-formed v4 UUID.
+describe('useAiVaultSessionRefresh in a non-secure context', () => {
+  it('mints a request token when crypto.randomUUID is unavailable', async () => {
+    await withNonSecureContextCrypto(async () => {
+      await renderHook()
+      await flushMicrotasks()
+
+      expect(lastCallArgs()).toMatchObject({
+        requestToken: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        )
+      })
+    })
   })
 })

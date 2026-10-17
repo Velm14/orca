@@ -5,18 +5,18 @@
 // worktree identity so meta, tabs, and the live PTY session carry over. It is
 // best-effort and local-only — remote/Windows/locked/dest-taken all degrade to
 // "folder kept" without disturbing the rename that already succeeded.
-import type { GlobalSettings, Repo } from '../../shared/types'
+import type { Repo } from '../../shared/repo-types'
 import {
   FOLDER_WORKSPACE_INSTANCE_SEPARATOR,
   getRepoIdFromWorktreeId,
   splitWorktreeIdForFilesystem
-} from '../../shared/worktree-id'
+} from '../../shared/worktree/id'
 import { getRepoExecutionHostId, LOCAL_EXECUTION_HOST_ID } from '../../shared/execution-host'
 import { planWorktreeFolderRename } from '../ipc/worktree-folder-rename-target'
 
 export type FirstWorkFolderRenameDeps = {
   getRepo: (repoId: string) => Repo | undefined
-  getSettings: () => GlobalSettings
+  getSettings: () => Parameters<typeof planWorktreeFolderRename>[0]['settings']
   /** Re-key all worktreeId-keyed state from the old (path-derived) id to the new. */
   migrateWorktreeIdentity: (oldWorktreeId: string, newWorktreeId: string) => void
   /** Invalidate caches + tell the renderer the worktree's id changed (old->new) so

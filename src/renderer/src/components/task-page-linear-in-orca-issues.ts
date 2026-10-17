@@ -1,5 +1,8 @@
-import type { LinearIssue, LinearWorkspace, Worktree } from '../../../shared/types'
-import { parseLinearIssueInput } from '../../../shared/linear-links'
+import { readLinkedTaskIssuesWithLimit } from './read-linked-task-issues'
+import type { LinearIssue } from '../../../shared/linear/issue-types'
+import type { LinearWorkspace } from '../../../shared/linear/workspace-types'
+import type { Worktree } from '../../../shared/worktree/types'
+import { parseLinearIssueInput } from '../../../shared/linear/links'
 import {
   getTaskSourceCacheScope,
   type TaskSourceContext
@@ -101,7 +104,7 @@ export function collectLinkedLinearIssueRefsFromWorktrees(
         (candidate.sourceContext ? getTaskSourceCacheScope(candidate.sourceContext) : '') ===
           sourceScope
     )
-    if ((workspaceId || organizationUrlKey) && unscopedIndex >= 0) {
+    if ((workspaceId || organizationUrlKey) && unscopedIndex !== -1) {
       existing[unscopedIndex] = ref
     } else if (!workspaceId && !organizationUrlKey) {
       const hasSameSourceScope = existing.some(
@@ -163,16 +166,5 @@ export async function readLinkedLinearIssuesWithLimit(
   read: (ref: LinkedLinearIssueRef) => Promise<LinearIssue | null>,
   concurrency = 6
 ): Promise<(LinearIssue | null)[]> {
-  const results = Array.from({ length: refs.length }, (): LinearIssue | null => null)
-  let nextIndex = 0
-  const workerCount = Math.min(refs.length, Math.max(1, Math.floor(concurrency)))
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (nextIndex < refs.length) {
-        const index = nextIndex++
-        results[index] = await read(refs[index])
-      }
-    })
-  )
-  return results
+  return readLinkedTaskIssuesWithLimit(refs, read, concurrency)
 }

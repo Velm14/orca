@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentStatusEntry } from '../../../src/shared/agent-status-types'
 import {
   canShowMobileNativeChat,
+  isMobileFolderNativeChatReadable,
   isMobileNativeChatTranscriptReadable,
   resolveMobileNativeChat
 } from './mobile-native-chat-eligibility'
@@ -80,6 +81,22 @@ describe('resolveMobileNativeChat', () => {
     })
   })
 
+  it.each(['opencode', 'opencode2'])('admits %s only on the execution host', (agent) => {
+    const tab = {
+      type: 'terminal',
+      launchAgent: agent,
+      agentStatus: status({
+        providerSession: { key: 'session_id', id: 'real-session' }
+      })
+    }
+    expect(resolveMobileNativeChat(tab, true)).toEqual({
+      agent,
+      sessionId: 'real-session',
+      transcriptPath: null
+    })
+    expect(resolveMobileNativeChat(tab, false)).toBeNull()
+  })
+
   it('returns null for unsupported agents', () => {
     expect(resolveMobileNativeChat({ type: 'terminal', launchAgent: 'gemini' })).toBeNull()
   })
@@ -97,6 +114,24 @@ describe('resolveMobileNativeChat', () => {
     ).toBeNull()
   })
 
+  // Why: omp's hook reports no transcript path either, so mobile can only show
+  // its chat when the serving host is the one holding the session file.
+  it('admits omp only when its transcript is readable by the serving host', () => {
+    const tab = { type: 'terminal', launchAgent: 'omp' }
+    expect(resolveMobileNativeChat(tab, isMobileNativeChatTranscriptReadable(null))).toMatchObject({
+      agent: 'omp'
+    })
+    expect(
+      resolveMobileNativeChat(tab, isMobileNativeChatTranscriptReadable('runtime-ssh-environment'))
+    ).toMatchObject({ agent: 'omp' })
+    expect(
+      resolveMobileNativeChat(tab, isMobileNativeChatTranscriptReadable('model-a-ssh'))
+    ).toBeNull()
+    expect(canShowMobileNativeChat(tab, isMobileNativeChatTranscriptReadable('model-a-ssh'))).toBe(
+      false
+    )
+  })
+
   it('returns null for a plain shell (no agent)', () => {
     expect(resolveMobileNativeChat({ type: 'terminal' })).toBeNull()
   })
@@ -105,8 +140,70 @@ describe('resolveMobileNativeChat', () => {
     expect(resolveMobileNativeChat({ type: 'browser', launchAgent: 'claude' })).toBeNull()
   })
 
+  it('resolves Codex structured agent-session tabs directly', () => {
+    expect(
+      resolveMobileNativeChat({
+        type: 'agent-session',
+        sessionId: 'structured-1',
+        agent: 'codex'
+      })
+    ).toEqual({
+      agent: 'codex',
+      sessionId: 'structured-1',
+      transcriptPath: null
+    })
+  })
+
+  it('resolves Claude structured agent-session tabs on the same journal path', () => {
+    expect(
+      resolveMobileNativeChat({
+        type: 'agent-session',
+        sessionId: 'structured-1',
+        agent: 'claude'
+      })
+    ).toEqual({
+      agent: 'claude',
+      sessionId: 'structured-1',
+      transcriptPath: null
+    })
+  })
+
+  it.each(['grok', 'opencode', 'omp', 'pi'])(
+    'resolves %s structured agent-session tabs on the same journal path',
+    (agent) => {
+      expect(
+        resolveMobileNativeChat({ type: 'agent-session', sessionId: 'structured-1', agent })
+      ).toEqual({ agent, sessionId: 'structured-1', transcriptPath: null })
+    }
+  )
+
+  it('rejects structured agent-session tabs with no session or an unreadable agent id', () => {
+    expect(resolveMobileNativeChat({ type: 'agent-session', agent: 'grok' })).toBeNull()
+    expect(
+      resolveMobileNativeChat({
+        type: 'agent-session',
+        sessionId: 'structured-1',
+        agent: 'Not An Id'
+      })
+    ).toBeNull()
+  })
+
   it('canShowMobileNativeChat mirrors resolution', () => {
     expect(canShowMobileNativeChat({ type: 'terminal', launchAgent: 'claude' })).toBe(true)
     expect(canShowMobileNativeChat(null)).toBe(false)
   })
+})
+
+it('resolves folder readability from the serving host catalog and rejects Model-A SSH', () => {
+  const read = (connectionId: unknown) =>
+    isMobileFolderNativeChatReadable(
+      {
+        folderWorkspaces: [{ id: 'one', connectionId }]
+      },
+      'folder:one'
+    )
+  expect(read(null)).toBe(true)
+  expect(read('ssh:box')).toBe(false)
+  expect(isMobileFolderNativeChatReadable({ folderWorkspaces: [] }, 'folder:one')).toBe(false)
+  expect(isMobileFolderNativeChatReadable(null, 'folder:one')).toBe(false)
 })

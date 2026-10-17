@@ -1,7 +1,8 @@
-import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
+import { InFlightPromiseDedupe, stableInFlightKey } from '../../shared/in-flight-promise-dedupe'
+import { openTranscriptReadStream, wslGatedStat } from '../native-chat/wsl-transcript-fs-access'
+import { WslTranscriptFsError } from '../native-chat/wsl-transcript-fs-gate'
 import { extractString, normalizeTitleText, parseJsonObject } from './session-scanner-values'
 
 // Codex names threads lazily in <CODEX_HOME>/session_index.jsonl; transcripts
@@ -18,9 +19,14 @@ type CodexSessionIndexTitleCacheEntry = {
 }
 
 const codexSessionIndexTitleCache = new Map<string, Promise<CodexSessionIndexTitleCacheEntry>>()
+const inFlightTitleReads = new InFlightPromiseDedupe<Map<string, string>>(
+  0,
+  CODEX_SESSION_INDEX_TITLE_CACHE_MAX
+)
 
 export function resetCodexSessionIndexTitleCacheForTests(): void {
   codexSessionIndexTitleCache.clear()
+  inFlightTitleReads.clear()
 }
 
 export function _getCodexSessionIndexTitleCacheSizeForTest(): number {
@@ -77,7 +83,7 @@ async function readCodexSessionIndexTitles(codexHome: string): Promise<Map<strin
   const indexPath = join(codexHome, CODEX_SESSION_INDEX_FILE)
   let signature: string
   try {
-    const indexStat = await stat(indexPath)
+    const indexStat = await wslGatedStat(indexPath, 'scan')
     signature = `${indexStat.size}:${indexStat.mtimeMs}`
   } catch {
     return new Map()
@@ -88,10 +94,30 @@ async function readCodexSessionIndexTitles(codexHome: string): Promise<Map<strin
     return cachedTitles
   }
 
-  const pending = readCodexSessionIndexTitlesFromDisk(indexPath).then((titles) => ({
-    signature,
-    titles
-  }))
+  // A shared WSL stat resumes cache misses together; share the reload before opening the index.
+  return inFlightTitleReads.run(stableInFlightKey([codexHome, signature]), () =>
+    loadCodexSessionIndexTitles(codexHome, indexPath, signature)
+  )
+}
+
+async function loadCodexSessionIndexTitles(
+  codexHome: string,
+  indexPath: string,
+  signature: string
+): Promise<Map<string, string>> {
+  const cachedTitles = await readCachedCodexSessionIndexTitles(codexHome, signature)
+  if (cachedTitles) {
+    return cachedTitles
+  }
+
+  const pending = readCodexSessionIndexTitlesFromDisk(indexPath).then(({ titles, refused }) => {
+    // Why: a gate refusal is a stalled distro, not a title-less index — caching
+    // it would pin "no titles" until the index's size or mtime changes.
+    if (refused && codexSessionIndexTitleCache.get(codexHome) === pending) {
+      codexSessionIndexTitleCache.delete(codexHome)
+    }
+    return { signature, titles }
+  })
   storeCodexSessionIndexTitleCacheEntry(codexHome, pending)
   return (await pending).titles
 }
@@ -133,11 +159,11 @@ function storeCodexSessionIndexTitleCacheEntry(
 
 async function readCodexSessionIndexTitlesFromDisk(
   indexPath: string
-): Promise<Map<string, string>> {
+): Promise<{ titles: Map<string, string>; refused: boolean }> {
   const titleBySessionId = new Map<string, string>()
   try {
     const lines = createInterface({
-      input: createReadStream(indexPath, { encoding: 'utf-8' }),
+      input: openTranscriptReadStream(indexPath, { encoding: 'utf-8' }, 'scan'),
       crlfDelay: Infinity
     })
     for await (const line of lines) {
@@ -151,8 +177,9 @@ async function readCodexSessionIndexTitlesFromDisk(
         titleBySessionId.set(sessionId, title)
       }
     }
-  } catch {
+  } catch (error) {
     // Codex creates the index opportunistically; older homes may only have raw transcripts.
+    return { titles: titleBySessionId, refused: error instanceof WslTranscriptFsError }
   }
-  return titleBySessionId
+  return { titles: titleBySessionId, refused: false }
 }

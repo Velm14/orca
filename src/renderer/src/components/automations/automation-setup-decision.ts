@@ -1,11 +1,8 @@
 import type { AutomationWorkspaceMode } from '../../../../shared/automations-types'
-import type {
-  OrcaHooks,
-  ProjectHostSetup,
-  Repo,
-  SetupDecision,
-  SetupRunPolicy
-} from '../../../../shared/types'
+import type { OrcaHooks, SetupRunPolicy } from '../../../../shared/orca-yaml-hook-types'
+import type { ProjectHostSetup } from '../../../../shared/project-types'
+import type { Repo } from '../../../../shared/repo-types'
+import type { SetupDecision } from '../../../../shared/worktree/create-types'
 import { getSetupConfig } from '@/lib/new-workspace'
 
 type AutomationSetupSource = {
@@ -47,14 +44,13 @@ export function getAutomationSetupDefaultDecision(
 }
 
 export function getVisibleAutomationSetupDecision(args: {
-  createTarget: 'orca' | 'hermes'
   workspaceMode: AutomationWorkspaceMode
   repoId: string
   repos: readonly Repo[]
   projectHostSetups: readonly ProjectHostSetup[]
   yamlHooks?: OrcaHooks | null
 }): Extract<SetupDecision, 'run' | 'skip'> | undefined {
-  if (args.createTarget !== 'orca' || args.workspaceMode !== 'new_per_run') {
+  if (args.workspaceMode !== 'new_per_run') {
     return undefined
   }
   return getAutomationSetupDefaultDecision(
@@ -63,7 +59,6 @@ export function getVisibleAutomationSetupDecision(args: {
 }
 
 export function resolveAutomationSetupDecisionForSave(args: {
-  createTarget: 'orca' | 'hermes'
   workspaceMode: AutomationWorkspaceMode
   repoId: string
   repos: readonly Repo[]
@@ -71,7 +66,7 @@ export function resolveAutomationSetupDecisionForSave(args: {
   yamlHooks?: OrcaHooks | null
   draftSetupDecision: Extract<SetupDecision, 'run' | 'skip'> | undefined
 }): Extract<SetupDecision, 'run' | 'skip'> | undefined {
-  if (args.createTarget !== 'orca' || args.workspaceMode !== 'new_per_run') {
+  if (args.workspaceMode !== 'new_per_run') {
     return undefined
   }
 

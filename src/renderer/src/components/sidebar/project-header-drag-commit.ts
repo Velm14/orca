@@ -1,12 +1,12 @@
+import { getLogicalRepoOrderRankById } from '../../../../shared/project-section-order'
 import {
   applyAllRepoInsertAt,
-  getLogicalRepoOrderRankById,
   getProjectGroupOrderForSidebarDrop,
   mapSidebarProjectHeaderDropIndexToSiblingInsertIndex,
   mapSidebarRepoDropIndexToAllRepoInsertAt
 } from './project-header-drop'
 import type { ProjectHeaderDragSession } from './project-header-drag-contract'
-import type { Repo } from '../../../../shared/types'
+import type { Repo } from '../../../../shared/repo-types'
 
 export function commitProjectHeaderDragDrop(args: {
   session: ProjectHeaderDragSession

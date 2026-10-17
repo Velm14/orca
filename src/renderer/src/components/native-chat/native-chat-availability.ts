@@ -1,6 +1,10 @@
-import type { Tab, TuiAgent } from '../../../../shared/types'
+import type { Tab } from '../../../../shared/tab-types'
+import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { AgentType } from '../../../../shared/agent-status-types'
-import { isNativeChatSupportedAgent } from '@/lib/native-chat-supported-agent'
+import {
+  isNativeChatSupportedAgent,
+  nativeChatRequiresLocalTranscript
+} from '@/lib/native-chat-supported-agent'
 
 export { isNativeChatSupportedAgent }
 
@@ -9,8 +13,6 @@ export { isNativeChatSupportedAgent }
  *  unit-testable; call sites resolve `launchAgent`/`detectedAgent` from the
  *  terminal tab + agent-status before calling. */
 export type NativeChatAvailabilityInput = {
-  /** Feature flag: hidden unless enabled from Settings > Experimental. */
-  experimentalNativeChatEnabled?: boolean
   contentType: Tab['contentType']
   /** The coding-agent Orca launched in this terminal, if any (from TerminalTab). */
   launchAgent?: TuiAgent | null
@@ -36,9 +38,6 @@ export type NativeChatAvailabilityInput = {
  *  launch metadata is next, and title resolution only fills the pre-hook gap for
  *  manually-started Claude/Codex/Grok sessions. */
 export function canToggleNativeChat(input: NativeChatAvailabilityInput): boolean {
-  if (input.experimentalNativeChatEnabled !== true) {
-    return false
-  }
   if (input.contentType !== 'terminal') {
     return false
   }
@@ -46,7 +45,10 @@ export function canToggleNativeChat(input: NativeChatAvailabilityInput): boolean
     return true
   }
   const agent = input.detectedAgent ?? input.launchAgent ?? input.resolvedAgent
-  if (agent === 'grok' && input.nativeChatTranscriptIsLocalReadable !== true) {
+  if (
+    nativeChatRequiresLocalTranscript(agent) &&
+    input.nativeChatTranscriptIsLocalReadable !== true
+  ) {
     return false
   }
   return isNativeChatSupportedAgent(agent)
