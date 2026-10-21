@@ -10,14 +10,17 @@ import { BrowserWindow } from 'electron'
  */
 const chromeWindowIds = new Set<number>()
 
-export function registerChromeWindow(window: BrowserWindow): void {
+/** The slice of a BrowserWindow the registry reads. */
+type ChromeWindowHandle = { id: number; once(event: 'closed', listener: () => void): unknown }
+
+export function registerChromeWindow(window: ChromeWindowHandle): void {
   chromeWindowIds.add(window.id)
   window.once('closed', () => {
     chromeWindowIds.delete(window.id)
   })
 }
 
-export function isChromeWindow(window: BrowserWindow): boolean {
+export function isChromeWindow(window: { id: number }): boolean {
   return chromeWindowIds.has(window.id)
 }
 

@@ -1,7 +1,7 @@
 // Wire shape pushed from main to the notch renderer.
 // The renderer holds no derived state: everything it paints is computed in main and arrives
 // here whole, so the bar can never disagree with the counts the service resolved.
-import type { AgentStatusState } from '../agent-status-types'
+import type { AgentStatusState, AgentType } from '../agent-status-types'
 import type { CollapsedBarLayout, NotchPresentation } from './notch-bar-geometry'
 import type { NotchLane, NotchStatusSummary } from './notch-status-summary'
 
@@ -31,7 +31,7 @@ export type NotchRow = {
   title: string
   /** Branch or short SHA when known; empty for folder workspaces and main-resolved rows. */
   subtitle: string
-  agentType: string | null
+  agentType: AgentType | null
   stateStartedAt: number
   worktreeId: string | null
   repoId: string | null

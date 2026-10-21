@@ -96,7 +96,7 @@ vi.mock('electron', () => ({
   },
   BrowserWindow: class {
     constructor() {
-      return makeWindow(created.length + 1) as unknown as object
+      return makeWindow(created.length + 1)
     }
   },
   screen: {

@@ -34,12 +34,13 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 512
 }
 
-function parseFocusPaneArgs(value: unknown): NotchFocusPaneArgs | null {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-  const args = value as Record<string, unknown>
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseFocusPaneArgs(args: unknown): NotchFocusPaneArgs | null {
   if (
+    !isRecord(args) ||
     !isNonEmptyString(args.repoId) ||
     !isNonEmptyString(args.worktreeId) ||
     !isNonEmptyString(args.tabId)

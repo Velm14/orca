@@ -3,7 +3,8 @@
 import {
   isFreshNonDoneAgentStatus,
   type AgentStatusIpcPayload,
-  type AgentStatusState
+  type AgentStatusState,
+  type AgentType
 } from '../agent-status-types'
 
 /** The three glyph lanes the bar renders. Mirrors the dashboard's buckets, minus `idle`. */
@@ -15,7 +16,7 @@ export type NotchSession = {
   paneKey: string
   lane: NotchLane
   state: AgentStatusState
-  agentType?: string
+  agentType?: AgentType
   worktreeId?: string
   tabId?: string
   /** Drives the elapsed-time column; when the current state began, not last ping. */

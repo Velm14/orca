@@ -15,7 +15,7 @@ function payload(
     receivedAt: Date.now(),
     stateStartedAt: 1_000,
     ...overrides
-  } as AgentStatusIpcPayload
+  }
 }
 
 const noAcks: Record<string, number> = {}

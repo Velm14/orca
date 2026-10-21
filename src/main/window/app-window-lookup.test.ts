@@ -66,30 +66,30 @@ describe('findAppWindow', () => {
     // suppressing tray attention and inverting notification focus gating.
     const notch = makeWindow(1)
     makeWindow(2)
-    lookup.registerChromeWindow(notch as never)
+    lookup.registerChromeWindow(notch)
 
     expect(lookup.findAppWindow()?.id).toBe(2)
   })
 
   it('returns null when only a chrome window remains', () => {
     const notch = makeWindow(1)
-    lookup.registerChromeWindow(notch as never)
+    lookup.registerChromeWindow(notch)
 
     expect(lookup.findAppWindow()).toBeNull()
   })
 
   it('stops excluding a chrome window once it closes', () => {
     const notch = makeWindow(1)
-    lookup.registerChromeWindow(notch as never)
-    expect(lookup.isChromeWindow(notch as never)).toBe(true)
+    lookup.registerChromeWindow(notch)
+    expect(lookup.isChromeWindow(notch)).toBe(true)
 
     closedHandlers.get(1)?.()
 
-    expect(lookup.isChromeWindow(notch as never)).toBe(false)
+    expect(lookup.isChromeWindow(notch)).toBe(false)
   })
 
   it('leaves ordinary windows unregistered', () => {
     const plain = makeWindow(1)
-    expect(lookup.isChromeWindow(plain as never)).toBe(false)
+    expect(lookup.isChromeWindow(plain)).toBe(false)
   })
 })

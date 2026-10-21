@@ -17,21 +17,21 @@ function payload(
     connectionId: null,
     receivedAt,
     stateStartedAt
-  } as AgentStatusIpcPayload
+  }
 }
 
 function makeSource(initial: AgentStatusIpcPayload[]) {
   let snapshot = initial
-  const enriched: (() => void)[] = []
-  const cleared: (() => void)[] = []
+  const enriched: ((payload: unknown) => void)[] = []
+  const cleared: ((clear: unknown) => void)[] = []
   const source: NotchStatusSource = {
     getStatusSnapshot: () => snapshot,
     subscribeEnrichedStatus: (listener) => {
-      enriched.push(listener as () => void)
+      enriched.push(listener)
       return () => undefined
     },
     subscribePaneStatusClear: (listener) => {
-      cleared.push(listener as () => void)
+      cleared.push(listener)
       return () => undefined
     }
   }
@@ -40,8 +40,8 @@ function makeSource(initial: AgentStatusIpcPayload[]) {
     setSnapshot: (next: AgentStatusIpcPayload[]) => {
       snapshot = next
     },
-    emitStatus: () => enriched.forEach((fn) => fn()),
-    emitClear: () => cleared.forEach((fn) => fn())
+    emitStatus: () => enriched.forEach((fn) => fn(undefined)),
+    emitClear: () => cleared.forEach((fn) => fn(undefined))
   }
 }
 
@@ -233,9 +233,7 @@ describe('NotchStatusService', () => {
   it('publishes when only a session identity changes', () => {
     // Why: lane and counts stay identical when a pane is re-attributed, but the row's label and
     // click target both change — skipping the publish leaves a row routing to the old pane.
-    const harness = makeSource([
-      { ...payload('t1:a', 'working'), worktreeId: 'repo::/w/one' } as AgentStatusIpcPayload
-    ])
+    const harness = makeSource([{ ...payload('t1:a', 'working'), worktreeId: 'repo::/w/one' }])
     const service = new NotchStatusService({
       source: harness.source,
       scheduleFlush: immediateFlush
@@ -244,9 +242,7 @@ describe('NotchStatusService', () => {
     const listener = vi.fn()
     service.subscribe(listener)
 
-    harness.setSnapshot([
-      { ...payload('t1:a', 'working'), worktreeId: 'repo::/w/two' } as AgentStatusIpcPayload
-    ])
+    harness.setSnapshot([{ ...payload('t1:a', 'working'), worktreeId: 'repo::/w/two' }])
     harness.emitStatus()
 
     expect(listener).toHaveBeenCalledTimes(1)
@@ -254,9 +250,7 @@ describe('NotchStatusService', () => {
   })
 
   it('publishes when a session changes agent type', () => {
-    const harness = makeSource([
-      { ...payload('t1:a', 'working'), agentType: 'claude' } as AgentStatusIpcPayload
-    ])
+    const harness = makeSource([{ ...payload('t1:a', 'working'), agentType: 'claude' }])
     const service = new NotchStatusService({
       source: harness.source,
       scheduleFlush: immediateFlush
@@ -265,9 +259,7 @@ describe('NotchStatusService', () => {
     const listener = vi.fn()
     service.subscribe(listener)
 
-    harness.setSnapshot([
-      { ...payload('t1:a', 'working'), agentType: 'codex' } as AgentStatusIpcPayload
-    ])
+    harness.setSnapshot([{ ...payload('t1:a', 'working'), agentType: 'codex' }])
     harness.emitStatus()
 
     expect(listener).toHaveBeenCalledTimes(1)

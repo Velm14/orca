@@ -56,6 +56,10 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 // Why: helper stdout is parsed as untrusted input — a partial or malformed row must be dropped
 // rather than produce NaN geometry that silently mispositions the window.
 function parseGeometry(stdout: string): Map<number, ScreenNotchGeometry> {
@@ -66,13 +70,16 @@ function parseGeometry(stdout: string): Map<number, ScreenNotchGeometry> {
   } catch {
     return byDisplayId
   }
-  const rows = (parsed as { displays?: unknown })?.displays
+  const rows = isRecord(parsed) ? parsed.displays : undefined
   if (!Array.isArray(rows)) {
     return byDisplayId
   }
-  for (const row of rows) {
-    const entry = row as Partial<ScreenNotchGeometry>
-    if (!isFiniteNumber(entry.displayId) || !isFiniteNumber(entry.safeAreaTop)) {
+  for (const entry of rows) {
+    if (
+      !isRecord(entry) ||
+      !isFiniteNumber(entry.displayId) ||
+      !isFiniteNumber(entry.safeAreaTop)
+    ) {
       continue
     }
     const leading = isFiniteNumber(entry.notchLeadingOffsetX) ? entry.notchLeadingOffsetX : null

@@ -65,12 +65,14 @@ function clamp(value: number, min: number, max: number): number {
   return max < min ? min : Math.min(Math.max(value, min), max)
 }
 
-function hasHardwareNotch(display: NotchDisplayInfo): boolean {
-  return (
-    (display.safeAreaTop ?? 0) > 0 &&
-    display.notchLeadingX !== null &&
-    display.notchTrailingX !== null
-  )
+function readHardwareNotch(
+  display: NotchDisplayInfo
+): { leading: number; trailing: number; barHeight: number } | null {
+  const { safeAreaTop, notchLeadingX, notchTrailingX } = display
+  if (!safeAreaTop || safeAreaTop <= 0 || notchLeadingX === null || notchTrailingX === null) {
+    return null
+  }
+  return { leading: notchLeadingX, trailing: notchTrailingX, barHeight: safeAreaTop }
 }
 
 /** Resolves presentation and every fixed measurement for one display. */
@@ -79,10 +81,9 @@ export function computeNotchPanelMetrics(display: NotchDisplayInfo): NotchPanelM
   const panelWidth = Math.min(EXPANDED_PANEL_WIDTH, Math.max(1, bounds.width))
   const panelOriginY = bounds.y
 
-  if (hasHardwareNotch(display)) {
-    const leading = display.notchLeadingX as number
-    const trailing = display.notchTrailingX as number
-    const barHeight = display.safeAreaTop as number
+  const hardwareNotch = readHardwareNotch(display)
+  if (hardwareNotch) {
+    const { leading, trailing, barHeight } = hardwareNotch
     const notchWidth = Math.max(trailing - leading, MIN_NOTCH_WIDTH)
     const notchCenterX = (leading + trailing) / 2
     return {
