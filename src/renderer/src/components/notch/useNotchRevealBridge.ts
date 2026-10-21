@@ -12,6 +12,7 @@ import { revealHostTerminalPane } from '@/hooks/ipc-events/terminal-pane-reveal-
 export function useNotchRevealBridge(): void {
   const activeTabId = useAppStore((state) => state.activeTabId)
   const activeWorktreeId = useAppStore((state) => state.activeWorktreeId)
+  const workspaceSessionReady = useAppStore((state) => state.workspaceSessionReady)
 
   // Why: the notch panel is a non-focusable window, so it never receives a blur and cannot
   // notice that your attention moved. Main closes it when another app takes over or an Orca
@@ -22,6 +23,11 @@ export function useNotchRevealBridge(): void {
   }, [activeTabId, activeWorktreeId])
 
   useEffect(() => {
+    // Why: session restore re-selects the persisted worktree and tab, so a reveal applied
+    // before it lands is overwritten — a row click that reopened the window showed the old tab.
+    if (!workspaceSessionReady) {
+      return
+    }
     const unsubscribe = window.api.notch?.onRevealPane?.((args) => {
       // Why the shared reveal: it also opens the floating panel and paired-server workspaces.
       revealHostTerminalPane({
@@ -36,5 +42,5 @@ export function useNotchRevealBridge(): void {
     // the app window closed was silently dropped every time.
     window.api.notch?.notifyRevealReady?.()
     return unsubscribe
-  }, [])
+  }, [workspaceSessionReady])
 }

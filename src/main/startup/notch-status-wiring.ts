@@ -1,4 +1,4 @@
-import { app, type BrowserWindow } from 'electron'
+import { app, type BrowserWindow, type WebContents } from 'electron'
 import { agentHookServer } from '../agent-hooks/server'
 import { registerNotchHandlers } from '../ipc/notch'
 import { getTrustedUIRendererWindow } from '../ipc/ui'
@@ -17,6 +17,7 @@ import {
 } from '../notch/notch-window'
 import { findAppWindow } from '../window/app-window-lookup'
 import { safelyRevealWindow } from '../window/focus-existing-window'
+import { isBackgroundLaunch } from '../window/foreground-activation-policy'
 import {
   NOTCH_REVEAL_PANE_CHANNEL,
   type NotchFocusPaneRequest
@@ -33,6 +34,8 @@ let openMainWindow: (() => BrowserWindow) | null = null
 // Buffered until the app renderer acks its listener: a freshly opened window drops IPC sent
 // before its React effect attaches.
 let pendingNotchReveal: NotchFocusPaneRequest | null = null
+// The renderer whose listener is attached; the ack waits for session restore and a reload resets it.
+let revealReadyContents: WebContents | null = null
 let notchQuitCommitted = false
 let notchRestorePending = false
 
@@ -62,7 +65,10 @@ export function syncNotchStatus(showNotchStatus: boolean): void {
     return
   }
   if (!notchStatusService) {
-    notchStatusService = new NotchStatusService({ source: agentHookServer })
+    notchStatusService = new NotchStatusService({
+      source: agentHookServer,
+      getPersistedAcknowledgements: () => state.store?.getUI().acknowledgedAgentsByPaneKey
+    })
     notchStatusService.start()
   }
   const service = notchStatusService
@@ -79,13 +85,24 @@ export function syncNotchStatus(showNotchStatus: boolean): void {
 }
 
 function flushNotchReveal(): void {
-  const args = pendingNotchReveal
-  pendingNotchReveal = null
   const window = getTrustedUIRendererWindow()
-  if (!args || !window || window.isDestroyed() || window.webContents.isDestroyed()) {
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) {
     return
   }
-  window.webContents.send(NOTCH_REVEAL_PANE_CHANNEL, args)
+  const contents = window.webContents
+  if (revealReadyContents !== contents) {
+    revealReadyContents = contents
+    contents.once('did-start-loading', () => {
+      if (revealReadyContents === contents) {
+        revealReadyContents = null
+      }
+    })
+  }
+  const args = pendingNotchReveal
+  pendingNotchReveal = null
+  if (args) {
+    contents.send(NOTCH_REVEAL_PANE_CHANNEL, args)
+  }
 }
 
 // Why it reopens a closed window: a row click with no app window is the case the notch exists for.
@@ -96,10 +113,13 @@ function revealNotchPane(args: NotchFocusPaneRequest): void {
     return
   }
   safelyRevealWindow(window)
-  if (existing && !existing.webContents.isLoading()) {
+  if (existing && revealReadyContents === existing.webContents) {
     existing.webContents.send(NOTCH_REVEAL_PANE_CHANNEL, args)
   } else {
     pendingNotchReveal = args
+  }
+  if (isBackgroundLaunch()) {
+    return
   }
   try {
     app.focus({ steal: true })
