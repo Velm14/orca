@@ -125,7 +125,9 @@ export function buildNotchSummary({
         {
           state: entry.state,
           updatedAt: entry.receivedAt,
-          restoredUnconfirmed: entry.restoredUnconfirmed
+          evidenceObservedAt: entry.evidenceObservedAt,
+          restoredUnconfirmed: entry.restoredUnconfirmed,
+          ...(entry.structuredHost === 'owned' ? { structuredHostOwned: true as const } : {})
         },
         now
       )

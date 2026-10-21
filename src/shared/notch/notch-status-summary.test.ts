@@ -185,6 +185,32 @@ describe('buildNotchSummary', () => {
     ).toBe(0)
   })
 
+  it('ages a replayed row by when its evidence was observed, not when it arrived', () => {
+    const replayed = payload('t1:a', 'working', {
+      receivedAt: 31 * 60_000,
+      evidenceObservedAt: 0,
+      stateStartedAt: 0
+    })
+
+    expect(
+      buildNotchSummary({ snapshot: [replayed], acknowledgedAtByPaneKey: noAcks, now: 31 * 60_000 })
+        .counts.working
+    ).toBe(0)
+  })
+
+  it('keeps a structured-host-owned agent past the silence window', () => {
+    const owned = payload('t1:a', 'working', {
+      receivedAt: 0,
+      stateStartedAt: 0,
+      structuredHost: 'owned'
+    })
+
+    expect(
+      buildNotchSummary({ snapshot: [owned], acknowledgedAtByPaneKey: noAcks, now: 31 * 60_000 })
+        .counts.working
+    ).toBe(1)
+  })
+
   it('drops an unconfirmed hydrated row even when its timestamp is fresh', () => {
     // Why: hydrateLastStatusFromDisk marks restored non-done rows restoredUnconfirmed — the
     // turn may have ended while no receiver was up. Every other surface suppresses them.
