@@ -242,6 +242,16 @@ describe('notch window teardown', () => {
     expect(mod.isNotchExpanded()).toBe(false)
   })
 
+  it('does not latch an expand while there is nothing to list', async () => {
+    // Why: a latched flag opened the panel unprompted once the next agent started.
+    create()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    mod.setNotchExpanded(true)
+
+    expect(mod.isNotchExpanded()).toBe(false)
+  })
+
   it('ignores a redundant collapse', () => {
     create()
     expect(mod.isNotchExpanded()).toBe(false)

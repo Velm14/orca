@@ -185,8 +185,12 @@ export function createNotchWindow(options: NotchWindowOptions): BrowserWindow | 
       notchWidth: metrics.notchWidth
     })
     const rows = options.buildRows(summary)
-    // Collapsing with no sessions left would otherwise leave an empty card hanging open.
-    const isExpanded = expanded && rows.length > 0
+    // Collapsing with no sessions left would otherwise leave an empty card hanging open; clearing
+    // the flag stops the next agent from reopening it unprompted.
+    if (rows.length === 0) {
+      expanded = false
+    }
+    const isExpanded = expanded
     const rect = isExpanded
       ? expandedWindowRect(metrics, rows.length)
       : collapsedWindowRect(metrics, layout)
