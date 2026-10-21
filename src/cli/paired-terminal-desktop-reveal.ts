@@ -5,9 +5,9 @@ import { RuntimeClient } from './runtime-client'
 import { resolveEnvironment } from './runtime/environments'
 
 /**
- * A paired server has no window, so `terminal.focus` there never navigates (#24688). The desktop
- * app on this machine shows that server's panes under the same ids and can reveal one.
- * Resolves false when no local desktop shows the environment; the server's answer then stands.
+ * The desktop app on this machine shows a paired environment's panes under the same ids and can
+ * reveal one; it is the window the person running the CLI is looking at (#24688, #31073).
+ * Resolves false when no local desktop shows the environment; the paired host then navigates.
  */
 export async function revealPairedTerminalOnLocalDesktop(
   client: RuntimeClient,
