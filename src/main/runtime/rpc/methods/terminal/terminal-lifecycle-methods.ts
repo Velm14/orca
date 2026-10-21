@@ -1,4 +1,5 @@
 import { terminalImageViewerSupported } from '../../../terminal-image-viewer-env'
+import { ORCA_SIDEBAR_INPUTS_IS_MAIN } from '../../../../../shared/sidebar-inputs-switch'
 import { defineMethod } from '../../core'
 import {
   navigationTargetsHost,
@@ -49,43 +50,53 @@ export const TERMINAL_LIFECYCLE_METHODS = [
       const activate = pairedViewer ? false : params.activate === true
       const presentation =
         pairedViewer && params.presentation === 'focused' ? 'background' : params.presentation
-      return {
-        terminal: await runtime.dedupeTerminalCreate(
-          pairedDeviceId ?? clientId ?? 'local',
-          params.worktree,
-          params.clientMutationId,
-          params.reconcileExisting === true,
-          (canonicalWorktreeSelector, preAllocatedHandle) =>
-            runtime.createTerminal(canonicalWorktreeSelector, {
-              command: params.command,
-              terminalImageViewerSupported: terminalImageViewerSupported(context),
-              ...(params.shell ? { shellOverride: params.shell } : {}),
-              startupCommandDelivery: params.startupCommandDelivery,
-              env: params.env,
-              envToDelete: params.envToDelete,
-              ...(params.launchConfig ? { launchConfig: params.launchConfig } : {}),
-              ...(params.resumeProviderSession
-                ? { resumeProviderSession: params.resumeProviderSession }
-                : {}),
-              ...(params.launchToken ? { launchToken: params.launchToken } : {}),
-              ...(params.launchAgent ? { launchAgent: params.launchAgent } : {}),
-              ...(params.terminalKittyKeyboardProtocol === true
-                ? { terminalKittyKeyboardProtocol: true }
-                : {}),
-              ...(params.terminalColorQueryReplies
-                ? { terminalColorQueryReplies: params.terminalColorQueryReplies }
-                : {}),
-              title: params.title,
-              focus,
-              activate,
-              presentation,
-              tabId: params.tabId,
-              leafId: params.leafId,
-              ...(params.spawnIntent ? { spawnIntent: params.spawnIntent } : {}),
-              ...(preAllocatedHandle ? { preAllocatedHandle } : {})
-            })
+      const terminal = await runtime.dedupeTerminalCreate(
+        pairedDeviceId ?? clientId ?? 'local',
+        params.worktree,
+        params.clientMutationId,
+        params.reconcileExisting === true,
+        (canonicalWorktreeSelector, preAllocatedHandle) =>
+          runtime.createTerminal(canonicalWorktreeSelector, {
+            command: params.command,
+            terminalImageViewerSupported: terminalImageViewerSupported(context),
+            ...(params.shell ? { shellOverride: params.shell } : {}),
+            startupCommandDelivery: params.startupCommandDelivery,
+            env: params.env,
+            envToDelete: params.envToDelete,
+            ...(params.launchConfig ? { launchConfig: params.launchConfig } : {}),
+            ...(params.resumeProviderSession
+              ? { resumeProviderSession: params.resumeProviderSession }
+              : {}),
+            ...(params.launchToken ? { launchToken: params.launchToken } : {}),
+            ...(params.launchAgent ? { launchAgent: params.launchAgent } : {}),
+            ...(params.terminalKittyKeyboardProtocol === true
+              ? { terminalKittyKeyboardProtocol: true }
+              : {}),
+            ...(params.terminalColorQueryReplies
+              ? { terminalColorQueryReplies: params.terminalColorQueryReplies }
+              : {}),
+            title: params.title,
+            focus,
+            activate,
+            presentation,
+            tabId: params.tabId,
+            leafId: params.leafId,
+            ...(params.spawnIntent ? { spawnIntent: params.spawnIntent } : {}),
+            ...(preAllocatedHandle ? { preAllocatedHandle } : {})
+          })
+      )
+      // Switch point. A CLI start is work in the workspace; a window or phone tab is a person opening one.
+      if (
+        ORCA_SIDEBAR_INPUTS_IS_MAIN &&
+        context.caller?.kind === 'local-cli' &&
+        !terminal.isReattach
+      ) {
+        runtime.sidebarFacts?.sortStamps.noteTerminalStarted(
+          terminal.worktreeId,
+          terminal.executionHostId
         )
       }
+      return { terminal }
     }
   }),
   defineMethod({
@@ -93,12 +104,25 @@ export const TERMINAL_LIFECYCLE_METHODS = [
     permission: 'workspace',
     params: TerminalSplit,
     handler: async (params, { runtime }) => ({
-      split: await runtime.splitTerminal(params.terminal, {
-        direction: params.direction,
-        command: params.command,
-        env: params.env,
-        telemetrySource: params.telemetrySource
-      })
+      split:
+        params.pane && !params.terminal
+          ? await runtime.splitTerminalPane(params.pane, {
+              direction: params.direction ?? 'horizontal',
+              newLeafId: params.newLeafId,
+              cwd: params.cwd,
+              initialSize: params.initialSize,
+              command: params.command,
+              env: params.env,
+              // The window's split shows why its start failed, as its own spawn did.
+              keepPaneOnStartFailure: true
+            })
+          : // The schema requires a handle when no pane is named.
+            await runtime.splitTerminal(params.terminal ?? '', {
+              direction: params.direction,
+              command: params.command,
+              env: params.env,
+              telemetrySource: params.telemetrySource
+            })
     })
   }),
   defineMethod({
