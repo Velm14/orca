@@ -39,3 +39,26 @@ export function shouldRestoreNotchAfterQuitAttempt({
 
 /** Long enough for a committed quit to have reached `will-quit`, short enough to feel instant. */
 export const NOTCH_QUIT_ABORT_GRACE_MS = 3000
+
+const guardedAppWindows = new WeakSet<object>()
+
+/**
+ * A quit can outlast the grace window (a slow shutdown capture), so a restored bar is torn down
+ * again when the app window closes mid-quit, letting `window-all-closed` complete it.
+ */
+export function closeRestoredNotchWithAppWindow(args: {
+  appWindow: { once(event: 'closed', listener: () => void): unknown }
+  isQuitting: () => boolean
+  closeNotchForQuit: () => void
+}): void {
+  const { appWindow, isQuitting, closeNotchForQuit } = args
+  if (guardedAppWindows.has(appWindow)) {
+    return
+  }
+  guardedAppWindows.add(appWindow)
+  appWindow.once('closed', () => {
+    if (isQuitting()) {
+      closeNotchForQuit()
+    }
+  })
+}

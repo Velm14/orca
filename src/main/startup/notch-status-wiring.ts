@@ -5,6 +5,7 @@ import { getTrustedUIRendererWindow } from '../ipc/ui'
 import { NotchStatusService } from '../notch/notch-status-service'
 import {
   NOTCH_QUIT_ABORT_GRACE_MS,
+  closeRestoredNotchWithAppWindow,
   shouldRestoreNotchAfterQuitAttempt
 } from '../notch/notch-quit-restore'
 import { buildNotchRows } from '../notch/notch-rows'
@@ -144,15 +145,22 @@ function installNotchQuitHandlers(): void {
     notchRestorePending = true
     const timer = setTimeout(() => {
       notchRestorePending = false
+      const appWindow = findAppWindow()
       if (
+        appWindow &&
         shouldRestoreNotchAfterQuitAttempt({
           quitCommitted: notchQuitCommitted,
-          hasAppWindow: findAppWindow() !== null,
+          hasAppWindow: true,
           settingEnabled: state.store?.getSettings().showNotchStatus === true,
           wasOpenBeforeQuit: wasOpen
         })
       ) {
         syncNotchStatus(true)
+        closeRestoredNotchWithAppWindow({
+          appWindow,
+          isQuitting: () => state.isQuitting,
+          closeNotchForQuit: closeNotchWindowForQuit
+        })
       }
     }, NOTCH_QUIT_ABORT_GRACE_MS)
     timer.unref?.()

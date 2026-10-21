@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest'
-import { shouldRestoreNotchAfterQuitAttempt } from './notch-quit-restore'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  closeRestoredNotchWithAppWindow,
+  shouldRestoreNotchAfterQuitAttempt
+} from './notch-quit-restore'
 
 const base = {
   quitCommitted: false,
@@ -70,5 +73,50 @@ describe('back-to-back vetoed quits', () => {
         wasOpenBeforeQuit: wasOpenForAttempt(false, false)
       })
     ).toBe(false)
+  })
+})
+
+describe('closeRestoredNotchWithAppWindow', () => {
+  function fakeAppWindow() {
+    const listeners: (() => void)[] = []
+    return {
+      listeners,
+      once: (_event: 'closed', listener: () => void) => listeners.push(listener),
+      close: () => listeners.splice(0).forEach((listener) => listener())
+    }
+  }
+
+  it('tears the restored bar down when the app window closes mid-quit', () => {
+    // Why: a quit slower than the grace window would otherwise be stranded by the restored bar.
+    const appWindow = fakeAppWindow()
+    const closeNotchForQuit = vi.fn()
+    closeRestoredNotchWithAppWindow({ appWindow, isQuitting: () => true, closeNotchForQuit })
+
+    appWindow.close()
+
+    expect(closeNotchForQuit).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the bar when the window closes outside a quit', () => {
+    const appWindow = fakeAppWindow()
+    const closeNotchForQuit = vi.fn()
+    closeRestoredNotchWithAppWindow({ appWindow, isQuitting: () => false, closeNotchForQuit })
+
+    appWindow.close()
+
+    expect(closeNotchForQuit).not.toHaveBeenCalled()
+  })
+
+  it('adds one listener per window across repeated vetoed quits', () => {
+    const appWindow = fakeAppWindow()
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      closeRestoredNotchWithAppWindow({
+        appWindow,
+        isQuitting: () => true,
+        closeNotchForQuit: () => undefined
+      })
+    }
+
+    expect(appWindow.listeners).toHaveLength(1)
   })
 })
