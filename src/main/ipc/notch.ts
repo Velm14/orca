@@ -98,10 +98,12 @@ export function registerNotchHandlers({
     }
   })
 
-  // Only the notch's own renderer may drive the window's size.
+  // Only the notch's own renderer may expand; the app window may collapse it on a tab switch.
   ipcMain.on(NOTCH_SET_EXPANDED_CHANNEL, (event, next: unknown) => {
     if (isNotchRenderer(event.sender)) {
       setNotchExpanded(next === true)
+    } else if (event.sender === getTrustedUIRendererWindow()?.webContents) {
+      setNotchExpanded(false)
     }
   })
 
