@@ -1,6 +1,9 @@
+import { useAppStore } from '@/store'
 import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
+import { minimizeFloatingWorkspacePanel } from '@/lib/floating-workspace-panel-reveal'
 import { activateAndRevealWorkspace } from '@/lib/worktree-activation'
 import { activateTerminalTabOnOwner } from '@/lib/terminal-tab-owner-activation'
+import { isFloatingWorkspaceId } from '../../../shared/floating-workspace-worktree'
 import type { TerminalPaneRevealTarget } from '../../../shared/terminal-pane-reveal'
 
 /**
@@ -19,6 +22,10 @@ export function revealTerminalPane(target: TerminalPaneRevealTarget): boolean {
   )
   if (activated === false) {
     return false
+  }
+  if (!isFloatingWorkspaceId(target.worktreeId)) {
+    // Why: the floating panel overlays the main window, so the revealed pane would sit under it.
+    minimizeFloatingWorkspacePanel(useAppStore.getState())
   }
   activateTabAndFocusPane(target.tabId, target.leafId, { flashFocusedPane: true })
   activateTerminalTabOnOwner(target.worktreeId, target.tabId, target.leafId)

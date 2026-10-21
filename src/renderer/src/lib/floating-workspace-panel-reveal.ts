@@ -1,5 +1,6 @@
 import type { AppState } from '@/store/types'
 import { selectFloatingWorkspacePanelVisible } from '@/store/floating-workspace-panel-selector'
+import { persistFloatingTerminalPanelOpen } from '@/components/floating-terminal/floating-terminal-panel-view-state'
 import { TOGGLE_FLOATING_TERMINAL_EVENT } from './floating-terminal'
 
 function toggleFloatingWorkspacePanel(): void {
@@ -30,4 +31,17 @@ export function revealFloatingWorkspacePanel(
       requestAnimationFrame(toggleFloatingWorkspacePanel)
     }
   })
+}
+
+/** Minimizes an open floating panel, as its "—" control does; its tabs stay mounted and alive. */
+// Why not the toggle event: its close path refocuses what was active before the panel opened,
+// which would take focus from the pane being revealed.
+export function minimizeFloatingWorkspacePanel(
+  state: Pick<AppState, 'settings' | 'floatingWorkspacePanelOpen' | 'setFloatingWorkspacePanelOpen'>
+): void {
+  if (!selectFloatingWorkspacePanelVisible(state)) {
+    return
+  }
+  state.setFloatingWorkspacePanelOpen(false)
+  persistFloatingTerminalPanelOpen(false)
 }

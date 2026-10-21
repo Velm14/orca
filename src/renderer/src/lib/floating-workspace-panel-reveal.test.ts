@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getDefaultSettings } from '../../../shared/constants'
 import type { AppState } from '@/store/types'
 import { TOGGLE_FLOATING_TERMINAL_EVENT } from './floating-terminal'
-import { revealFloatingWorkspacePanel } from './floating-workspace-panel-reveal'
+import {
+  minimizeFloatingWorkspacePanel,
+  revealFloatingWorkspacePanel
+} from './floating-workspace-panel-reveal'
+
+const persistOpen = vi.hoisted(() => vi.fn())
+vi.mock('@/components/floating-terminal/floating-terminal-panel-view-state', () => ({
+  persistFloatingTerminalPanelOpen: persistOpen
+}))
 
 function panelState({ enabled, open }: { enabled: boolean; open: boolean }) {
   return {
@@ -26,7 +34,10 @@ function stubWindow() {
   return { dispatchEvent, runFrames: () => frames.splice(0).forEach((frame) => frame(0)) }
 }
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  persistOpen.mockReset()
+})
 
 describe('revealFloatingWorkspacePanel', () => {
   it('toggles an enabled panel open only while the store says it is closed', () => {
@@ -66,5 +77,33 @@ describe('revealFloatingWorkspacePanel', () => {
 
     expect(unhydrated.updateSettings).not.toHaveBeenCalled()
     expect(dispatchEvent).not.toHaveBeenCalled()
+  })
+})
+
+describe('minimizeFloatingWorkspacePanel', () => {
+  it('closes and persists a visible panel without the toggle that would move focus', () => {
+    const { dispatchEvent } = stubWindow()
+    const state = {
+      ...panelState({ enabled: true, open: true }),
+      setFloatingWorkspacePanelOpen: vi.fn()
+    }
+
+    minimizeFloatingWorkspacePanel(state)
+
+    expect(state.setFloatingWorkspacePanelOpen).toHaveBeenCalledWith(false)
+    expect(persistOpen).toHaveBeenCalledWith(false)
+    expect(dispatchEvent).not.toHaveBeenCalled()
+  })
+
+  it('leaves a closed or disabled panel and its saved state alone', () => {
+    for (const panel of [
+      { enabled: true, open: false },
+      { enabled: false, open: true }
+    ]) {
+      const state = { ...panelState(panel), setFloatingWorkspacePanelOpen: vi.fn() }
+      minimizeFloatingWorkspacePanel(state)
+      expect(state.setFloatingWorkspacePanelOpen).not.toHaveBeenCalled()
+    }
+    expect(persistOpen).not.toHaveBeenCalled()
   })
 })
