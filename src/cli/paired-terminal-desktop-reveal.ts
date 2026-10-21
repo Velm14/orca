@@ -5,7 +5,8 @@ import { RuntimeClient } from './runtime-client'
 import { resolveEnvironment } from './runtime/environments'
 
 // Why: just past the desktop's own 10 s wait for its renderer, so a stalled local app delays the
-// paired host's fallback by seconds rather than the client's default request timeout.
+// paired host's fallback by seconds rather than the client's default request timeout. It bounds the
+// client, not one call, so the runtime-source probe that can precede the reveal is bounded too.
 const LOCAL_DESKTOP_REVEAL_TIMEOUT_MS = 12_000
 
 /**
@@ -25,17 +26,18 @@ export async function revealPairedTerminalOnLocalDesktop(
     const { terminal } = (
       await client.call<{ terminal: RuntimeTerminalShow }>('terminal.show', { terminal: handle })
     ).result
-    const desktop = new RuntimeClient(client.userDataPath, undefined, null, null)
-    const revealed = await desktop.call<{ reveal: RuntimeTerminalReveal }>(
-      'terminal.reveal',
-      {
-        worktreeId: terminal.worktreeId,
-        tabId: terminal.tabId,
-        leafId: terminal.leafId,
-        executionHostId: toRuntimeExecutionHostId(environment.id)
-      },
-      { timeoutMs: LOCAL_DESKTOP_REVEAL_TIMEOUT_MS }
+    const desktop = new RuntimeClient(
+      client.userDataPath,
+      LOCAL_DESKTOP_REVEAL_TIMEOUT_MS,
+      null,
+      null
     )
+    const revealed = await desktop.call<{ reveal: RuntimeTerminalReveal }>('terminal.reveal', {
+      worktreeId: terminal.worktreeId,
+      tabId: terminal.tabId,
+      leafId: terminal.leafId,
+      executionHostId: toRuntimeExecutionHostId(environment.id)
+    })
     return revealed.result.reveal.navigated
   } catch {
     // Why: no desktop here, one without terminal.reveal, a headless one, or a handle gone since.

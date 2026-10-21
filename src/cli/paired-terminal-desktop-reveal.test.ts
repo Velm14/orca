@@ -59,18 +59,14 @@ describe('revealPairedTerminalOnLocalDesktop', () => {
     expect(mocks.resolveEnvironment).toHaveBeenCalledWith('/profile', 'winpc')
     expect(serverCall).toHaveBeenCalledWith('terminal.show', { terminal: HANDLE })
     // Why null selectors: the reveal must reach this machine's runtime, not the environment again.
-    expect(mocks.desktopClient).toHaveBeenCalledWith('/profile', undefined, null, null)
-    expect(mocks.desktopCall).toHaveBeenCalledWith(
-      'terminal.reveal',
-      {
-        worktreeId: shownTerminal.worktreeId,
-        tabId: shownTerminal.tabId,
-        leafId: shownTerminal.leafId,
-        executionHostId: 'runtime:env%2F1'
-      },
-      // A stalled local desktop must not hold the paired host's fallback for the default timeout.
-      { timeoutMs: 12_000 }
-    )
+    // A stalled local desktop must not hold the paired host's fallback for the default timeout.
+    expect(mocks.desktopClient).toHaveBeenCalledWith('/profile', 12_000, null, null)
+    expect(mocks.desktopCall).toHaveBeenCalledWith('terminal.reveal', {
+      worktreeId: shownTerminal.worktreeId,
+      tabId: shownTerminal.tabId,
+      leafId: shownTerminal.leafId,
+      executionHostId: 'runtime:env%2F1'
+    })
   })
 
   it('asks no desktop when the client is not talking to a paired environment', async () => {
