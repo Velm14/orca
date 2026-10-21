@@ -1,9 +1,9 @@
 // Reads real notch geometry from the bundled Swift helper.
 // Everything here degrades to "no notch" rather than throwing: a missing or misbehaving helper
 // must leave the indicator on its pill presentation, never break the window.
-import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { runProcess } from '@orca/process-host'
 import { app } from 'electron'
 
 const HELPER_EXECUTABLE = 'orca-screen-geometry'
@@ -97,12 +97,13 @@ function parseGeometry(stdout: string): Map<number, ScreenNotchGeometry> {
   return byDisplayId
 }
 
-function runHelper(helperPath: string): Promise<Map<number, ScreenNotchGeometry>> {
-  return new Promise((resolve) => {
-    execFile(helperPath, [], { timeout: HELPER_TIMEOUT_MS }, (error, stdout) => {
-      resolve(error ? new Map() : parseGeometry(String(stdout)))
-    })
-  })
+async function runHelper(helperPath: string): Promise<Map<number, ScreenNotchGeometry>> {
+  try {
+    const result = await runProcess({ program: helperPath, args: [], timeoutMs: HELPER_TIMEOUT_MS })
+    return result.timedOut || result.code !== 0 ? new Map() : parseGeometry(result.stdout)
+  } catch {
+    return new Map()
+  }
 }
 
 let readInFlight: Promise<Map<number, ScreenNotchGeometry>> | null = null
