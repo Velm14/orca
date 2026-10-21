@@ -157,6 +157,21 @@ describe('NotchStatusService', () => {
     expect(service.getSummary().counts.done).toBe(1)
   })
 
+  it('honours visits persisted before a restart, and the later of persisted and live', () => {
+    const harness = makeSource([payload('t1:a', 'done', 5_000), payload('t1:b', 'done', 5_000)])
+    const service = new NotchStatusService({
+      source: harness.source,
+      scheduleFlush: immediateFlush,
+      getPersistedAcknowledgements: () => ({ 't1:a': 6_000, 't1:b': 1_000 })
+    })
+    service.start()
+    expect(service.getSummary().counts.done).toBe(1)
+
+    service.acknowledgePanes(['t1:b'], 6_000)
+
+    expect(service.getSummary().counts.done).toBe(0)
+  })
+
   it('forgets acknowledgements for panes that no longer exist', () => {
     // Why: pane keys get reused, and a stale ack would suppress the next agent's green.
     const harness = makeSource([payload('t1:a', 'done', 5_000)])

@@ -28,6 +28,8 @@ export type NotchStatusServiceOptions = {
    * happened to fire.
    */
   startStaleTicker?: (tick: () => void) => () => void
+  /** The renderer's persisted pane visits, so a restart doesn't re-list panes already seen. */
+  getPersistedAcknowledgements?: () => Readonly<Record<string, number>> | undefined
 }
 
 const DEFAULT_FLUSH_DELAY_MS = 80
@@ -49,6 +51,7 @@ export class NotchStatusService {
   private readonly source: NotchStatusSource
   private readonly scheduleFlush: (flush: () => void) => () => void
   private readonly startStaleTicker: (tick: () => void) => () => void
+  private readonly getPersistedAcknowledgements: NotchStatusServiceOptions['getPersistedAcknowledgements']
   private stopStaleTicker: (() => void) | null = null
   private readonly listeners = new Set<(summary: NotchStatusSummary) => void>()
   private readonly unsubscribes: (() => void)[] = []
@@ -62,6 +65,7 @@ export class NotchStatusService {
     this.source = options.source
     this.scheduleFlush = options.scheduleFlush ?? defaultScheduleFlush
     this.startStaleTicker = options.startStaleTicker ?? defaultStaleTicker
+    this.getPersistedAcknowledgements = options.getPersistedAcknowledgements
   }
 
   start(): void {
@@ -141,7 +145,7 @@ export class NotchStatusService {
     this.pruneAcknowledgements(snapshot)
     const next = buildNotchSummary({
       snapshot,
-      acknowledgedAtByPaneKey: this.acknowledgedAtByPaneKey
+      acknowledgedAtByPaneKey: this.mergeAcknowledgements()
     })
     if (summariesEqual(this.summary, next)) {
       return
@@ -154,6 +158,22 @@ export class NotchStatusService {
         console.error('[notch] summary listener threw', err)
       }
     }
+  }
+
+  // Why both: the live mirror is empty after a restart; the persisted map survives it but trails
+  // the renderer's debounced UI write.
+  private mergeAcknowledgements(): Record<string, number> {
+    const persisted = this.getPersistedAcknowledgements?.()
+    if (!persisted) {
+      return this.acknowledgedAtByPaneKey
+    }
+    const merged = { ...persisted }
+    for (const [paneKey, acknowledgedAt] of Object.entries(this.acknowledgedAtByPaneKey)) {
+      if ((merged[paneKey] ?? 0) < acknowledgedAt) {
+        merged[paneKey] = acknowledgedAt
+      }
+    }
+    return merged
   }
 
   // Why: pane keys are reused after teardown, so a stale ack would suppress a later agent's
