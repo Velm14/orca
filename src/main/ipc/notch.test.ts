@@ -1,22 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NOTCH_SET_EXPANDED_CHANNEL } from '../../shared/notch/notch-snapshot'
 
+/** Stands in for a webContents: the handlers only compare senders by identity. */
+type FakeSender = { readonly name: string }
+
 const { handlers, notchSender, appSender, setNotchExpanded } = vi.hoisted(() => ({
-  handlers: new Map<string, (event: { sender: object }, value: unknown) => void>(),
-  notchSender: {},
-  appSender: {},
+  handlers: new Map<string, (event: { sender: FakeSender }, value: unknown) => void>(),
+  notchSender: { name: 'notch' },
+  appSender: { name: 'app' },
   setNotchExpanded: vi.fn()
 }))
 
 vi.mock('electron', () => ({
   ipcMain: {
     removeAllListeners: (channel: string) => handlers.delete(channel),
-    on: (channel: string, handler: (event: { sender: object }, value: unknown) => void) =>
+    on: (channel: string, handler: (event: { sender: FakeSender }, value: unknown) => void) =>
       handlers.set(channel, handler)
   }
 }))
 vi.mock('../notch/notch-window', () => ({
-  isNotchRenderer: (sender: object) => sender === notchSender,
+  isNotchRenderer: (sender: FakeSender) => sender === notchSender,
   setNotchExpanded,
   setNotchInteractive: vi.fn()
 }))
@@ -26,7 +29,7 @@ vi.mock('./ui', () => ({
 
 import { registerNotchHandlers } from './notch'
 
-function sendSetExpanded(sender: object, value: unknown): void {
+function sendSetExpanded(sender: FakeSender, value: unknown): void {
   handlers.get(NOTCH_SET_EXPANDED_CHANNEL)?.({ sender }, value)
 }
 
@@ -52,7 +55,7 @@ describe('notch setExpanded IPC', () => {
   })
 
   it('ignores any other sender', () => {
-    sendSetExpanded({}, false)
+    sendSetExpanded({ name: 'other' }, false)
     expect(setNotchExpanded).not.toHaveBeenCalled()
   })
 })
