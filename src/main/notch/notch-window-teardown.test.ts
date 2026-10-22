@@ -110,7 +110,6 @@ vi.mock('electron', () => ({
   }
 }))
 
-vi.mock('@electron-toolkit/utils', () => ({ is: { dev: false } }))
 vi.mock('../window/app-window-lookup', () => ({ registerChromeWindow: () => undefined }))
 vi.mock('../window/privileged-window-navigation', () => ({
   installPrivilegedWindowNavigationPolicy: () => undefined

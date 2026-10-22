@@ -1,8 +1,7 @@
 // The notch status window: a transparent, non-focusable panel pinned to the top of the
 // primary display, sized to exactly the bar it paints.
-import { BrowserWindow, screen, type Display, type WebContents } from 'electron'
+import { app, BrowserWindow, screen, type Display, type WebContents } from 'electron'
 import { join } from 'node:path'
-import { is } from '@electron-toolkit/utils'
 import { deferAppKitSceneMutation } from '../appkit-scene-mutation'
 import { registerChromeWindow } from '../window/app-window-lookup'
 import { installPrivilegedWindowNavigationPolicy } from '../window/privileged-window-navigation'
@@ -97,7 +96,7 @@ export function setNotchInteractive(interactive: boolean): void {
 
 function loadNotchRenderer(window: BrowserWindow): void {
   // Mirrors the dashboard pop-out's dev/prod branch.
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(`${process.env.ELECTRON_RENDERER_URL}/notch.html`)
   } else {
     void window.loadFile(join(__dirname, '../renderer/notch.html'))
