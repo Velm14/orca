@@ -4,16 +4,10 @@ import type { RuntimeTerminalReveal } from '../shared/terminal-pane-reveal'
 import { RuntimeClient } from './runtime-client'
 import { resolveEnvironment } from './runtime/environments'
 
-// Why: just past the desktop's own 10 s wait for its renderer, so a stalled local app delays the
-// paired host's fallback by seconds rather than the client's default request timeout. It bounds the
-// client, not one call, so the runtime-source probe that can precede the reveal is bounded too.
+// Just past the desktop's 10 s renderer wait; bounds the whole client, so the runtime-source probe too.
 const LOCAL_DESKTOP_REVEAL_TIMEOUT_MS = 12_000
 
-/**
- * The desktop app on this machine shows a paired environment's panes under the same ids and can
- * reveal one; it is the window the person running the CLI is looking at (#24688, #31073).
- * Resolves false when no local desktop shows the environment; the paired host then navigates.
- */
+/** Reveal a paired environment's pane on this machine's desktop, the window the CLI user sees. */
 export async function revealPairedTerminalOnLocalDesktop(
   client: RuntimeClient,
   handle: string
@@ -40,7 +34,6 @@ export async function revealPairedTerminalOnLocalDesktop(
     })
     return revealed.result.reveal.navigated
   } catch {
-    // Why: no desktop here, one without terminal.reveal, a headless one, or a handle gone since.
     return false
   }
 }

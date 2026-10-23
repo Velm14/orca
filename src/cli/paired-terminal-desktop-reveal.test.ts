@@ -58,8 +58,7 @@ describe('revealPairedTerminalOnLocalDesktop', () => {
 
     expect(mocks.resolveEnvironment).toHaveBeenCalledWith('/profile', 'winpc')
     expect(serverCall).toHaveBeenCalledWith('terminal.show', { terminal: HANDLE })
-    // Why null selectors: the reveal must reach this machine's runtime, not the environment again.
-    // A stalled local desktop must not hold the paired host's fallback for the default timeout.
+    // null bypasses ambient remote selection so reveal reaches the local desktop; 12 s bounds a stalled one.
     expect(mocks.desktopClient).toHaveBeenCalledWith('/profile', 12_000, null, null)
     expect(mocks.desktopCall).toHaveBeenCalledWith('terminal.reveal', {
       worktreeId: shownTerminal.worktreeId,
