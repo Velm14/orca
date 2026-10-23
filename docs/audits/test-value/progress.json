@@ -1,15 +1,15 @@
 {
-  "source_commit": "d52d8aa2d457aec1d4f09781cf077ec7d4191ac5",
-  "scanned_source_files": 37099,
+  "source_commit": "cb508dc745545c7d66ad4cea78d987e1742e547e",
+  "scanned_source_files": 37119,
   "counts": {
-    "files": 16965,
-    "declarations": 118924,
-    "reviewed": 1020,
+    "files": 16971,
+    "declarations": 118926,
+    "reviewed": 1308,
     "stale": 0,
-    "unreviewed": 15945,
+    "unreviewed": 15663,
     "removed": 15
   },
-  "reviewed_original_declarations": 7420,
+  "reviewed_original_declarations": 9373,
   "areas": {
     ".github": {
       "files": 3,
@@ -24,10 +24,10 @@
       "unreviewed": 0
     },
     "config": {
-      "files": 606,
-      "reviewed": 283,
+      "files": 608,
+      "reviewed": 383,
       "stale": 0,
-      "unreviewed": 323
+      "unreviewed": 225
     },
     "docs": {
       "files": 106,
@@ -36,10 +36,10 @@
       "unreviewed": 0
     },
     "mobile": {
-      "files": 1265,
-      "reviewed": 279,
+      "files": 1266,
+      "reviewed": 329,
       "stale": 0,
-      "unreviewed": 986
+      "unreviewed": 937
     },
     "native": {
       "files": 17,
@@ -49,15 +49,15 @@
     },
     "src/cli": {
       "files": 185,
-      "reviewed": 51,
+      "reviewed": 88,
       "stale": 0,
-      "unreviewed": 134
+      "unreviewed": 97
     },
     "src/main": {
-      "files": 6626,
-      "reviewed": 1,
+      "files": 6627,
+      "reviewed": 102,
       "stale": 0,
-      "unreviewed": 6625
+      "unreviewed": 6525
     },
     "src/packages": {
       "files": 16,
@@ -78,10 +78,10 @@
       "unreviewed": 5407
     },
     "src/shared": {
-      "files": 1300,
+      "files": 1302,
       "reviewed": 4,
       "stale": 0,
-      "unreviewed": 1296
+      "unreviewed": 1298
     },
     "src/wsl-guest": {
       "files": 45,
