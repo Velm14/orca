@@ -4,7 +4,8 @@ import type { RuntimeTerminalReveal } from '../shared/terminal-pane-reveal'
 import { RuntimeClient } from './runtime-client'
 import { resolveEnvironment } from './runtime/environments'
 
-// Just past the desktop's 10 s renderer wait; bounds the whole client, so the runtime-source probe too.
+// Just past the desktop's 10 s renderer wait. Bounds every step before the host fallback: the paired
+// host's terminal.show (a cold worktree catalog can scan) and the whole local client, probe included.
 const LOCAL_DESKTOP_REVEAL_TIMEOUT_MS = 12_000
 
 /** Reveal a paired environment's pane on this machine's desktop, the window the CLI user sees. */
@@ -18,7 +19,11 @@ export async function revealPairedTerminalOnLocalDesktop(
   try {
     const environment = resolveEnvironment(client.userDataPath, client.environmentSelector)
     const { terminal } = (
-      await client.call<{ terminal: RuntimeTerminalShow }>('terminal.show', { terminal: handle })
+      await client.call<{ terminal: RuntimeTerminalShow }>(
+        'terminal.show',
+        { terminal: handle },
+        { timeoutMs: LOCAL_DESKTOP_REVEAL_TIMEOUT_MS }
+      )
     ).result
     const desktop = new RuntimeClient(
       client.userDataPath,
