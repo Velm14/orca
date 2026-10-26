@@ -24,6 +24,7 @@ import {
   isDevBundleInUse,
   selectStaleDevBundleDirs
 } from './dev-electron-bundle-cache.mjs'
+import { buildDevScreenGeometryHelper } from './dev-screen-geometry-helper.mjs'
 import { startDevStorageReclaim } from './dev-storage-reclaim.mjs'
 import {
   announceDevInstance,
@@ -279,7 +280,7 @@ function prepareMacDevElectronApp() {
   // in the copied bundle, so copiedAppIsUsable() never observes it. Called from inside the
   // cached branch it would only build on the first dev launch — a deleted binary or an edited
   // main.swift would then silently leave the notch on its pill fallback.
-  buildDevScreenGeometryHelper()
+  buildDevScreenGeometryHelper(repoRoot)
 
   if (copiedAppIsUsable()) {
     pruneStaleDevBundles(distDir)
@@ -424,27 +425,6 @@ function restoreElectronFrameworkSymlinks(appPath) {
 function readGitCommonDir() {
   const value = readGitValue(['rev-parse', '--git-common-dir'])
   return value ? path.resolve(repoRoot, value) : null
-}
-
-function buildDevScreenGeometryHelper() {
-  // NSScreen's notch geometry has no Electron API, so without this every MacBook renders as a
-  // centred capsule in dev and the hardware-notch path is never exercised.
-  try {
-    execFileSync(
-      process.execPath,
-      // No --output: unpackaged builds resolve the helper from the repo's .build/release
-      // (see resolveHelperPath in src/main/notch/screen-geometry.ts), not from the bundle.
-      [
-        path.join(repoRoot, 'config', 'scripts', 'build-screen-geometry-macos.mjs'),
-        '--single-arch'
-      ],
-      { stdio: 'inherit' }
-    )
-  } catch (error) {
-    console.warn(
-      `[orca-dev] screen-geometry helper build failed (notch falls back to the pill): ${error?.message ?? error}`
-    )
-  }
 }
 
 async function prepareDevProfile({ kind, userDataPath }) {

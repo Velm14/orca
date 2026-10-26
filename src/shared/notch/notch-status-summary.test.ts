@@ -1,6 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatusIpcPayload, AgentStatusState } from '../agent-status-types'
 import { buildNotchSummary, isNotchIdle, isUnvisited, laneForState } from './notch-status-summary'
+
+// Fixed clock: buildNotchSummary defaults `now` to Date.now(), and fresh payloads must stay fresh.
+const NOW = 1_800_000_000_000
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(NOW)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function payload(
   paneKey: string,
@@ -12,7 +24,7 @@ function payload(
     state,
     prompt: '',
     connectionId: null,
-    receivedAt: Date.now(),
+    receivedAt: NOW,
     stateStartedAt: 1_000,
     ...overrides
   }
