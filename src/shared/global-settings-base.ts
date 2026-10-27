@@ -1,3 +1,4 @@
+import type { BrowserExtensionGlobalSettings } from './browser-extension-settings'
 import type { ClaudeAgentViewSettings } from './claude-agent-view'
 import type { BrowserLinkOpeningSettings } from './browser-link-opening-settings'
 import type { ClaudeAccountSwitchSettings } from './claude-account-switch-settings'
@@ -11,10 +12,11 @@ import type { OrchestrationHeartbeatSettings } from './orchestration-heartbeat'
 /** Settings groups owned by their feature modules and composed into GlobalSettings. */
 export type GlobalSettingsBase = ClaudeAgentViewSettings &
   NativeChatGlobalSettings &
+  NotchStatusSettings &
   WorktreeDeletionPreferences &
   ClaudeAccountSwitchSettings &
   AgentPermissionGlobalSettings &
   ExternalConversationSettings &
   BrowserLinkOpeningSettings &
   OrchestrationHeartbeatSettings &
-  NotchStatusSettings
+  BrowserExtensionGlobalSettings
